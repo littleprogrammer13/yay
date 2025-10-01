@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MediaGames - Gerenciador de Arquivos (Filebin)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7fafc; 
+        }
+        .file-card {
+            transition: all 0.3s ease;
+        }
+        .file-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 4, 0, 0.05);
+        }
+        .modal-overlay {
+            background-color: rgba(0, 0, 0, 0.7);
+        }
+        .loading-spinner {
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        .fade-in {
+            animation: fadeIn 0.3s ease-in-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body>
+    <div id="message-container" class="fixed top-4 right-4 z-50 space-y-2"></div>
+
+    <div id="confirmation-modal" class="hidden fixed inset-0 z-40 flex items-center justify-center p-4 modal-overlay">
+        <div class="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm transform transition-all duration-300 scale-95 opacity-0" id="confirmation-dialog">
+            <h3 class="text-xl font-bold text-gray-800 mb-4" id="confirmation-title">Confirmação</h3>
+            <p class="text-gray-600 mb-6" id="confirmation-message">Você tem certeza?</p>
+            <div class="flex justify-end space-x-3">
+                <button onclick="closeConfirmModal(false)" class="px-4 py-2 text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-full font-medium transition duration-150">Cancelar</button>
+                <button onclick="executeConfirmAction()" class="px-4 py-2 text-white bg-red-600 hover:bg-red-700 rounded-full font-medium transition duration-150">Confirmar</button>
+            </div>
+        </div>
+    </div>
+    
+    <div id="app">
+        </div>
+
+    <script type="module">
+        // --- Importações e Configurações de Firebase ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getDatabase, ref, set, remove, onValue, off } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-database.js";
+        
+        // E-mail Admin
+        const ADMIN_EMAIL = 'vilorprogramas@gmail.com'.toLowerCase();
+
+        // Configurações do Firebase
+        const FIREBASE_CONFIG = {
+            apiKey: "AIzaSyDK7tJ25gzSig3V_J5KQQhWd_GFZTlGADU",
+            authDomain: "mediagames-default.firebaseapp.com",
+            databaseURL: "https://mediagames-default-default-rtdb.firebaseio.com",
+            projectId: "mediagames-default",
+            storageBucket: "mediagames-default.firebasestorage.app", 
+            messagingSenderId: "147325806641",
+            appId: "1:147325806641:web:98b029dc4b77936614d10",
+            measurementId: "G-J2K2DZZG28"
+        };
+        
+        // --- Configurações do Filebin.net ---
+        const FILEBIN_CONFIG = {
+            apiBase: 'https://filebin.net/',
+            downloadBase: 'https://filebin.net/',
+            maxFileSize: 5 * 1024 * 1024 * 1024 // 5GB em bytes
+        };
+
+        // Variáveis globais para Firebase
+        let auth, db, app; 
+
+        // --- Estado da Aplicação ---
+        let appState = {
+            user: null,
+            userId: null,
+            isAdmin: false,
+            currentView: 'HOME',
+            files: [],
+            loading: false,
+            isAuthReady: false,
+            uploadProgress: 0 
+        };
+
+        // --- Funções de Estado e Utilitários ---
+        function setAppState(updater) {
+            const newState = typeof updater === 'function' ? updater(appState) : updater;
+            
+            const shouldRender = (
+                appState.userId !== newState.userId ||
+                appState.isAdmin !== newState.isAdmin ||
+                appState.loading !== newState.loading ||
+                appState.currentView !== newState.currentView ||
+                appState.files !== newState.files ||
+                appState.uploadProgress !== newState.uploadProgress
+            );
+
+            appState = newState;
+
+            if (shouldRender) {
+                renderApp();
+            }
+        }
+
+        // Simula um hook useEffect
+        let lastDeps = {};
+        function useEffect(callback, dependencies, name) {
+            const currentDeps = dependencies.map(dep => dep);
+            const depsChanged = !lastDeps[name] || currentDeps.some((dep, i) => dep !== lastDeps[name][i]);
+
+            if (depsChanged) {
+                lastDeps[name] = currentDeps;
+                callback();
+            }
+        }
+
+        function formatBytes(bytes, decimals = 2) {
+            if (bytes === 0 || bytes === null || bytes === undefined) return '0 Bytes';
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : 0;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+        }
+
+        function formatDate(timestamp) {
+            if (!timestamp) return 'Data desconhecida';
+            return new Date(timestamp).toLocaleDateString('pt-BR', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        }
+        
+        // --- Sistema de Mensagens ---
+        function showMessage(text, type = 'info', duration = 4000) {
+            const container = document.getElementById('message-container');
+            if (!container) return;
+
+            const colorMap = {
+                'success': 'bg-green-500', 
+                'error': 'bg-red-500', 
+                'warning': 'bg-yellow-500', 
+                'info': 'bg-blue-500'
+            };
+            const bgColor = colorMap[type] || 'bg-gray-500';
+
+            const messageEl = document.createElement('div');
+            messageEl.className = `${bgColor} text-white px-4 py-3 rounded-xl shadow-lg flex items-center space-x-2 transition-all duration-300 transform translate-y-2 opacity-0 fade-in`;
+            messageEl.innerHTML = `
+                <i class="fas ${type === 'success' ? 'fa-check-circle' : type === 'error' ? 'fa-exclamation-circle' : type === 'warning' ? 'fa-exclamation-triangle' : 'fa-info-circle'}"></i>
+                <span>${text}</span>
+            `;
+            
+            container.appendChild(messageEl);
+
+            setTimeout(() => {
+                messageEl.style.opacity = '1';
+                messageEl.style.transform = 'translateY(0)';
+            }, 10);
+
+            setTimeout(() => {
+                messageEl.style.opacity = '0';
+                messageEl.style.transform = 'translateY(-10px)';
+                setTimeout(() => messageEl.remove(), 300);
+            }, duration);
+        }
+
+        // --- Modal de Confirmação ---
+        let confirmActionCallback = null;
+        function confirmMessage(message, callback, title = "Confirmação de Ação") {
+            const modal = document.getElementById('confirmation-modal');
+            const dialog = document.getElementById('confirmation-dialog');
+            document.getElementById('confirmation-title').textContent = title;
+            document.getElementById('confirmation-message').textContent = message;
+            
+            confirmActionCallback = callback;
+            
+            modal.classList.remove('hidden');
+            setTimeout(() => {
+                dialog.classList.remove('opacity-0', 'scale-95');
+                dialog.classList.add('opacity-100', 'scale-100');
+            }, 10);
+        }
+
+        window.closeConfirmModal = (execute = false) => {
+            const modal = document.getElementById('confirmation-modal');
+            const dialog = document.getElementById('confirmation-dialog');
+            
+            dialog.classList.remove('opacity-100', 'scale-100');
+            dialog.classList.add('opacity-0', 'scale-95');
+
+            dialog.addEventListener('transitionend', () => {
+                modal.classList.add('hidden');
+                confirmActionCallback = null;
+            }, { once: true });
+
+            if (execute && confirmActionCallback) {
+                confirmActionCallback();
+            }
+        }
+
+        window.executeConfirmAction = () => {
+            window.closeConfirmModal(true);
+        }
+
+        // --- Funções de Autenticação ---
+        async function handleGoogleLogin(isForAdmin = false) {
+            if (!auth) {
+                showMessage('Erro de autenticação: Inicialização pendente.', 'error');
+                return;
+            }
+            
+            setAppState(state => ({ ...state, loading: true }));
+            const provider = new GoogleAuthProvider();
+            provider.addScope('email');
+
+            try {
+                const result = await signInWithPopup(auth, provider);
+                const user = result.user;
+                const userEmail = user.email ? user.email.toLowerCase() : '';
+
+                if (isForAdmin) {
+                    if (userEmail !== ADMIN_EMAIL) {
+                        await signOut(auth);
+                        showMessage('Acesso negado: Somente o e-mail ' + ADMIN_EMAIL + ' pode fazer login como Admin.', 'error');
+                        return;
+                    }
+                    showMessage('Login de Admin realizado com sucesso!', 'success');
+                } else {
+                    if (userEmail === ADMIN_EMAIL) {
+                        showMessage('Você é um admin. Por favor, use o botão "Login Admin".', 'warning');
+                        await signOut(auth);
+                        return;
+                    }
+                    showMessage('Login de Usuário realizado com sucesso!', 'success');
+                }
+
+            } catch (error) {
+                setAppState(state => ({ ...state, loading: false }));
+                console.error("Erro no Auth Google:", error);
+                if (error.code !== 'auth/popup-closed-by-user') {
+                    showMessage('Erro no login: ' + error.message, 'error');
+                }
+            }
+        }
+
+        async function handleLogout() {
+            if (!auth) return;
+            setAppState(state => ({ ...state, loading: true }));
+            try {
+                await signOut(auth);
+                showMessage('Logout realizado com sucesso.', 'info');
+            } catch (error) {
+                setAppState(state => ({ ...state, loading: false }));
+                console.error("Erro no Logout:", error);
+                showMessage('Erro ao fazer logout.', 'error');
+            }
+        }
+
+        // --- Utilitário Filebin ---
+        function generateBinId() {
+            // Cria um ID de bin único para evitar conflitos (mediagames-{userId}-{timestamp_base36})
+            return `mediagames-${appState.userId}-${Date.now().toString(36)}`;
+        }
+        
+        // ----------------------------------------------------------------------
+        // --- Lógica do Filebin.net + RTDB (UPLOAD com XHR) ---
+        // ----------------------------------------------------------------------
+
+        async function handleFileUpload() {
+            if (!appState.userId) {
+                showMessage('Você precisa estar logado para enviar arquivos.', 'warning');
+                return;
+            }
+            
+            const fileInput = document.getElementById('file-upload-input');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                showMessage('Selecione um arquivo para upload.', 'warning');
+                return;
+            }
+
+            // Validação de tamanho do arquivo
+            if (file.size > FILEBIN_CONFIG.maxFileSize) {
+                showMessage(`Arquivo muito grande. Tamanho máximo: ${formatBytes(FILEBIN_CONFIG.maxFileSize)}.`, 'error');
+                return;
+            }
+
+            // Inicia o estado de carregamento e mostra progresso 0%
+            setAppState(state => ({ ...state, loading: true, uploadProgress: 0 }));
+
+            try {
+                // 1. Prepara o upload
+                const binId = generateBinId();
+                const fileIdRTDB = binId; 
+                const uploadUrl = FILEBIN_CONFIG.apiBase + binId + '/' + encodeURIComponent(file.name);
+                const downloadUrl = FILEBIN_CONFIG.downloadBase + binId + '/' + encodeURIComponent(file.name);
+                
+                // 2. Executa o upload usando XMLHttpRequest (XHR)
+                await new Promise((resolve, reject) => {
+                    const xhr = new XMLHttpRequest();
+                    
+                    // --- Rastreamento de Progresso ---
+                    xhr.upload.addEventListener("progress", (event) => {
+                        if (event.lengthComputable) {
+                            const percentComplete = (event.loaded / event.total) * 100;
+                            setAppState(state => ({ ...state, uploadProgress: percentComplete }));
+                        }
+                    }, false);
+
+                    // --- Evento de Conclusão (Sucesso) ---
+                    xhr.addEventListener("load", async () => {
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            
+                            // 3. Salvar metadados no Realtime Database
+                            const fileRef = ref(db, 'files/' + fileIdRTDB);
+                            
+                            try {
+                                await set(fileRef, {
+                                    fileId: fileIdRTDB,
+                                    binId: binId,
+                                    fileName: file.name,
+                                    name: file.name,
+                                    size: file.size,
+                                    mimetype: file.type || 'application/octet-stream',
+                                    downloadUrl: downloadUrl,
+                                    userId: appState.userId,
+                                    userName: appState.user.email || appState.user.displayName || 'Usuário',
+                                    createdAt: Date.now(),
+                                    lastModified: Date.now(),
+                                    storageService: 'filebin-net'
+                                });
+                                resolve(); // Resolve a Promise principal após salvar no RTDB
+                            } catch (e) {
+                                reject(new Error("Erro ao salvar metadados no RTDB: " + e.message));
+                            }
+                        } else {
+                            // Erro no lado do servidor (e.g., Filebin limit)
+                            reject(new Error(`Upload falhou no Filebin com status: ${xhr.status}.`));
+                        }
+                    }, false);
+
+                    // --- Evento de Erro (Geralmente Erro de Rede, Load Failed, CORS) ---
+                    xhr.addEventListener("error", () => {
+                        // Mensagem mais informativa sobre a causa provável
+                        reject(new Error("Erro de rede: Falha ao carregar. Isso é quase sempre causado por restrições CORS. Certifique-se de que o arquivo está sendo executado a partir de um domínio (http:// ou https://) e não como arquivo local (file://)."));
+                    }, false);
+
+                    // --- Evento de Cancelamento/Aborto ---
+                    xhr.addEventListener("abort", () => {
+                        reject(new Error("Upload cancelado."));
+                    }, false);
+                    
+                    // Abre e envia a requisição POST com o arquivo no corpo
+                    xhr.open("POST", uploadUrl);
+                    xhr.send(file);
+                }); // Fim da Promise
+
+                showMessage(`"${file.name}" enviado com sucesso para o Filebin!`, 'success');
+                fileInput.value = ''; // Limpa o campo de arquivo
+
+            } catch (error) {
+                console.error("Erro no upload:", error);
+                showMessage(`Falha no upload: ${error.message}`, 'error');
+            } finally {
+                // Remove o carregamento e zera o progresso
+                setAppState(state => ({ ...state, loading: false, uploadProgress: 0 }));
+            }
+        }
+
+        async function handleDeleteFile(fileIdRTDB, fileName) {
+            if (!appState.userId) return;
+
+            confirmMessage(`Deseja deletar "${fileName}"? Esta ação removerá o arquivo do Filebin.net.`, async () => {
+                setAppState(state => ({ ...state, loading: true }));
+                try {
+                    const fileRefRTDB = ref(db, 'files/' + fileIdRTDB);
+                    
+                    // 1. Obter metadados do arquivo para pegar o binId
+                    const snapshot = await new Promise((resolve) => {
+                        onValue(fileRefRTDB, resolve, { onlyOnce: true });
+                    });
+                    
+                    const fileData = snapshot.val();
+                    
+                    if (fileData && fileData.binId) {
+                         // 2. Deletar o BIN inteiro no Filebin.net
+                        const deleteUrl = FILEBIN_CONFIG.apiBase + fileData.binId;
+                        const deleteResponse = await fetch(deleteUrl, { method: 'DELETE' });
+
+                        if (!deleteResponse.ok && deleteResponse.status !== 404) {
+                             // Se não for sucesso e não for 404 (já deletado), reporta erro.
+                            throw new Error(`Falha ao deletar no Filebin (${deleteResponse.status}).`);
+                        }
+                    } else {
+                        console.warn(`Metadados ou binId não encontrados para ${fileIdRTDB}.`);
+                    }
+                   
+                    // 3. Deletar metadados do Realtime Database
+                    await remove(fileRefRTDB);
+
+                    showMessage(`"${fileName}" deletado com sucesso do Filebin e do RTDB!`, 'success');
+
+                } catch (error) {
+                    console.error("Erro na deleção:", error);
+                    showMessage(`Falha ao deletar: ${error.message}`, 'error');
+                } finally {
+                    setAppState(state => ({ ...state, loading: false }));
+                }
+            });
+        }
+
+        async function handleDownloadFile(fileId, fileName, downloadUrl) {
+            try {
+                // downloadUrl já é a URL direta do Filebin.net, salva no RTDB
+                showMessage(`Iniciando download de "${fileName}" do Filebin...`, 'info');
+                
+                const link = document.createElement('a');
+                link.href = downloadUrl;
+                link.download = fileName; // Sugere o nome original do arquivo
+                link.target = '_blank';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                
+                showMessage(`Download de "${fileName}" iniciado!`, 'success');
+            } catch (error) {
+                console.error("Erro no download:", error);
+                showMessage(`Erro ao baixar arquivo: ${error.message}`, 'error');
+            }
+        }
+        
+        // --- Resto das Funções de Subscribe/Renderização ---
+        let unsubscribeFiles = null;
+
+        function subscribeToFiles() {
+            if (unsubscribeFiles) {
+                unsubscribeFiles();
+                unsubscribeFiles = null;
+            }
+
+            if (!appState.isAuthReady || !db || !appState.userId) {
+                setAppState(state => ({ ...state, files: [] }));
+                return;
+            }
+
+            const filesRef = ref(db, 'files');
+            
+            const valueCallback = (snapshot) => {
+                const filesObject = snapshot.val() || {};
+                const allFiles = Object.values(filesObject);
+
+                let filteredFiles;
+                
+                if (appState.isAdmin) {
+                    filteredFiles = allFiles;
+                } else {
+                    filteredFiles = allFiles.filter(file => file.userId === appState.userId);
+                }
+
+                filteredFiles.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+                setAppState(state => ({ ...state, files: filteredFiles }));
+            };
+
+            onValue(filesRef, valueCallback, (error) => {
+                console.error("Erro no Realtime Database:", error);
+                showMessage('Erro ao carregar arquivos.', 'error');
+            });
+            
+            unsubscribeFiles = () => off(filesRef, 'value', valueCallback);
+        }
+
+        // --- Inicialização do Firebase ---
+        async function loadInitialState() {
+            try {
+                app = initializeApp(FIREBASE_CONFIG);
+                db = getDatabase(app);
+                auth = getAuth(app);
+                
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        const userEmail = user.email ? user.email.toLowerCase() : '';
+                        const isAdmin = userEmail === ADMIN_EMAIL;
+                        
+                        setAppState(state => ({
+                            ...state,
+                            user: user,
+                            userId: user.uid,
+                            isAdmin: isAdmin,
+                            loading: false,
+                            isAuthReady: true
+                        }));
+                    } else {
+                        setAppState(state => ({ 
+                            ...state, 
+                            user: null, 
+                            userId: null, 
+                            isAdmin: false, 
+                            loading: false, 
+                            isAuthReady: true
+                        }));
+                    }
+                });
+
+            } catch (error) {
+                console.error("Erro na inicialização do Firebase:", error);
+                showMessage('Erro ao iniciar o Firebase. Verifique sua conexão.', 'error');
+                setAppState(state => ({ ...state, loading: false, isAuthReady: true }));
+            }
+        }
+
+        // --- Funções de Renderização (inclusas no seu código anterior) ---
+        function renderHeader(state) {
+            let authButton;
+            if (state.userId) {
+                const userEmail = state.user.email;
+                const isAdmin = state.isAdmin;
+                authButton = `
+                    <div class="flex items-center space-x-4">
+                        <div class="hidden sm:flex items-center space-x-2 text-white/90">
+                            <i class="fas fa-user-circle"></i>
+                            <span class="text-sm font-medium truncate max-w-[150px]" title="${userEmail}">
+                                ${userEmail.split('@')[0]}
+                            </span>
+                            ${isAdmin ? '<span class="bg-yellow-500 text-white text-xs px-2 py-1 rounded-full">Admin</span>' : ''}
+                        </div>
+                        <button 
+                            onclick="handleLogout()" 
+                            class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-full transition duration-150 shadow-lg flex items-center text-sm"
+                        >
+                            <i class="fas fa-sign-out-alt mr-2"></i> Sair
+                        </button>
+                    </div>
+                `;
+            } else {
+                authButton = `
+                    <div class="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-3">
+                        <button 
+                            onclick="handleGoogleLogin(false)" 
+                            class="w-full sm:w-auto px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-full transition duration-150 shadow-lg flex items-center justify-center text-sm font-medium"
+                        >
+                            <i class="fab fa-google mr-3"></i> Login como Usuário
+                        </button>
+                        <button 
+                            onclick="handleGoogleLogin(true)" 
+                            class="w-full sm:w-auto px-4 py-2 bg-yellow-500 hover:bg-yellow-600 text-white rounded-full transition duration-150 shadow-lg flex items-center justify-center text-sm font-medium"
+                            title="Admin: ${ADMIN_EMAIL}"
+                        >
+                            <i class="fas fa-user-shield mr-3"></i> Login como Admin
+                        </button>
+                    </div>
+                `;
+            }
+
+            return `
+                <header class="bg-gradient-to-r from-gray-800 to-gray-900 shadow-lg sticky top-0 z-10">
+                    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+                        <div class="flex justify-between items-center">
+                            <div class="flex items-center space-x-4">
+                                <a href="#" class="flex items-center space-x-3">
+                                    <div class="bg-blue-500 text-white p-2 rounded-lg">
+                                        <i class="fas fa-cloud-upload-alt text-xl"></i>
+                                    </div>
+                                    <span class="text-2xl font-bold text-white">
+                                        Media<span class="text-blue-400">Games</span>
+                                    </span>
+                                </a>
+                            </div>
+                            ${authButton}
+                        </div>
+                    </div>
+                </header>
+            `;
+        }
+
+        function renderFileListView(state) {
+            if (!state.isAuthReady) {
+                 return `
+                    <div class="min-h-screen flex items-center justify-center">
+                        <div class="text-center">
+                            <div class="loading-spinner inline-block w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full mb-4"></div>
+                            <p class="text-gray-600">Inicializando aplicação...</p>
+                        </div>
+                    </div>
+                 `;
+            }
+
+            if (!state.userId) {
+                return `
+                    <div class="min-h-screen flex items-center justify-center p-4">
+                        <div class="max-w-md w-full text-center bg-white rounded-2xl shadow-2xl p-8">
+                            <div class="bg-blue-100 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6">
+                                <i class="fas fa-cloud-upload-alt text-3xl text-blue-500"></i>
+                            </div>
+                            <h2 class="text-2xl font-bold text-gray-800 mb-4">Bem-vindo ao MediaGames</h2>
+                            <p class="text-gray-600 mb-8">Faça login para gerenciar seus arquivos na nuvem</p>
+                            <div class="space-y-3">
+                                <button 
+                                    onclick="handleGoogleLogin(false)" 
+                                    class="w-full px-6 py-3 bg-blue-500 hover:bg-blue-600 text-white font-bold rounded-xl shadow-lg transition duration-150 flex items-center justify-center"
+                                >
+                                    <i class="fab fa-google mr-3"></i> Login como Usuário
+                                </button>
+                                <button 
+                                    onclick="handleGoogleLogin(true)" 
+                                    class="w-full px-6 py-3 bg-yellow-500 hover:bg-yellow-600 text-white font-bold rounded-xl shadow-lg transition duration-150 flex items-center justify-center"
+                                >
+                                    <i class="fas fa-user-shield mr-3"></i> Login como Admin
+                                </button>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-6">
+                                Admin: acesso exclusivo para ${ADMIN_EMAIL}
+                            </p>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Bloco de progresso de upload
+            const uploadProgressDisplay = state.loading && state.uploadProgress > 0 
+                ? `
+                    <div class="mt-4">
+                        <div class="flex justify-between mb-1">
+                            <span class="text-sm font-medium text-blue-700">Progresso do Upload</span>
+                            <span class="text-sm font-medium text-blue-700">${state.uploadProgress.toFixed(0)}%</span>
+                        </div>
+                        <div class="w-full bg-gray-200 rounded-full h-2.5">
+                            <div class="bg-blue-600 h-2.5 rounded-full" style="width: ${state.uploadProgress}%"></div>
+                        </div>
+                    </div>
+                ` : '';
+
+
+            const uploadSection = `
+                <div class="bg-white p-6 rounded-2xl shadow-xl mb-8 border border-gray-100">
+                    <h3 class="text-xl font-bold text-gray-800 mb-4 flex items-center">
+                        <i class="fas fa-cloud-upload-alt mr-3 text-blue-500"></i> Novo Upload
+                    </h3>
+                    <div class="space-y-4">
+                        <div class="flex flex-col md:flex-row gap-4 items-start md:items-end">
+                            <div class="flex-grow">
+                                <label class="block text-sm font-medium text-gray-700 mb-2">
+                                    Selecione o arquivo (máx. ${formatBytes(FILEBIN_CONFIG.maxFileSize)})
+                                </label>
+                                <input 
+                                    type="file" 
+                                    id="file-upload-input" 
+                                    class="w-full text-gray-700 bg-gray-50 border border-gray-300 rounded-lg p-3 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 transition duration-150"
+                                    onchange="document.getElementById('upload-button').disabled = !this.files.length"
+                                    ${state.loading ? 'disabled' : ''}
+                                >
+                            </div>
+                            <button 
+                                id="upload-button"
+                                onclick="handleFileUpload()" 
+                                class="w-full md:w-auto px-6 py-3 bg-green-500 hover:bg-green-600 disabled:bg-gray-400 text-white font-bold rounded-xl transition duration-150 shadow-md flex items-center justify-center min-w-[120px]"
+                                disabled
+                            >
+                                ${state.loading ? '<i class="fas fa-spinner fa-spin mr-2"></i>' : '<i class="fas fa-upload mr-2"></i>'}
+                                ${state.loading ? 'Enviando...' : 'Upload'}
+                            </button>
+                        </div>
+                        ${uploadProgressDisplay}
+                        <div class="text-xs text-gray-500 space-y-1">
+                            <p><i class="fas fa-database mr-1"></i> Armazenamento: Filebin.net</p>
+                            <p><i class="fas fa-shield-alt mr-1"></i> Suporte a arquivos de até ${formatBytes(FILEBIN_CONFIG.maxFileSize)}</p>
+                            <p class="font-bold text-red-500"><i class="fas fa-exclamation-triangle mr-1"></i> AVISO: Filebin.net é um serviço temporário e pode expirar arquivos. Não use para armazenamento permanente.</p>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            const fileStats = `
+                <div class="bg-gradient-to-r from-blue-500 to-blue-600 text-white p-4 rounded-2xl shadow-lg mb-6">
+                    <div class="flex flex-wrap justify-between items-center">
+                        <div class="flex items-center space-x-3">
+                            <i class="fas fa-chart-bar text-2xl"></i>
+                            <div>
+                                <p class="text-sm opacity-90">Total de Arquivos</p>
+                                <p class="text-2xl font-bold">${state.files.length}</p>
+                            </div>
+                        </div>
+                        ${state.isAdmin ? `
+                        <div class="flex items-center space-x-3">
+                            <i class="fas fa-users text-2xl"></i>
+                            <div>
+                                <p class="text-sm opacity-90">Modo Admin</p>
+                                <p class="text-lg font-bold">Todos os arquivos</p>
+                            </div>
+                        </div>
+                        ` : ''}
+                        <div class="flex items-center space-x-3">
+                            <i class="fas fa-hdd text-2xl"></i>
+                            <div>
+                                <p class="text-sm opacity-90">Armazenamento</p>
+                                <p class="text-lg font-bold">Filebin.net</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            const fileList = state.files.length === 0 
+                ? `
+                    <div class="text-center py-16 bg-white rounded-2xl shadow-xl">
+                        <i class="fas fa-cloud text-6xl text-gray-300 mb-4"></i>
+                        <h3 class="text-xl font-bold text-gray-500 mb-2">Nenhum arquivo encontrado</h3>
+                        <p class="text-gray-400">Faça upload do seu primeiro arquivo para começar</p>
+                    </div>
+                `
+                : state.files.map(file => `
+                    <div class="file-card bg-white p-5 rounded-xl shadow-md border-l-4 ${
+                        file.userId === state.userId ? 'border-blue-500' : 'border-yellow-500'
+                    } fade-in">
+                        <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                            <div class="flex-grow min-w-0">
+                                <div class="flex items-start space-x-3">
+                                    <i class="fas ${
+                                        file.mimetype?.startsWith('image/') ? 'fa-image' :
+                                        file.mimetype?.startsWith('video/') ? 'fa-video' :
+                                        file.mimetype?.startsWith('audio/') ? 'fa-music' :
+                                        file.mimetype?.includes('pdf') ? 'fa-file-pdf' :
+                                        file.mimetype?.includes('zip') ? 'fa-file-archive' :
+                                        'fa-file'
+                                    } text-gray-400 mt-1 flex-shrink-0"></i>
+                                    <div class="min-w-0 flex-grow">
+                                        <p class="font-semibold text-gray-800 truncate text-lg mb-1">${file.name}</p>
+                                        <div class="flex flex-wrap gap-2 text-xs text-gray-500">
+                                            <span class="flex items-center space-x-1">
+                                                <i class="fas fa-user"></i>
+                                                <span class="${file.userId === state.userId ? 'text-blue-600 font-medium' : 'text-yellow-600 font-medium'}">
+                                                    ${file.userId === state.userId ? 'Você' : (state.isAdmin ? file.userName : 'Outro usuário')}
+                                                </span>
+                                            </span>
+                                            <span class="flex items-center space-x-1">
+                                                <i class="fas fa-weight-hanging"></i>
+                                                <span>${formatBytes(file.size)}</span>
+                                            </span>
+                                            <span class="flex items-center space-x-1">
+                                                <i class="fas fa-calendar"></i>
+                                                <span>${formatDate(file.createdAt)}</span>
+                                            </span>
+                                            <span class="flex items-center space-x-1">
+                                                <i class="fas fa-database"></i>
+                                                <span>Filebin.net</span> 
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="flex space-x-2 flex-shrink-0">
+                                <button onclick="handleDownloadFile('${file.fileId}', '${file.name.replace(/'/g, "\\'")}', '${file.downloadUrl}')"
+                                   class="flex items-center space-x-2 px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg transition duration-150 shadow-sm"
+                                   title="Download do arquivo">
+                                    <i class="fas fa-download"></i>
+                                    <span class="hidden sm:inline">Download</span>
+                                </button>
+                                ${(file.userId === state.userId || state.isAdmin) ? `
+                                <button onclick="handleDeleteFile('${file.fileId}', '${file.name.replace(/'/g, "\\'")}')" 
+                                        class="flex items-center space-x-2 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition duration-150 shadow-sm"
+                                        title="Deletar arquivo">
+                                    <i class="fas fa-trash"></i>
+                                    <span class="hidden sm:inline">Deletar</span>
+                                </button>
+                                ` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+
+            return `
+                <div class="max-w-6xl mx-auto p-4 md:p-8 space-y-8">
+                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                        <h2 class="text-3xl font-bold text-gray-900 flex items-center">
+                            <i class="fas fa-folder-open mr-3 text-blue-500"></i>
+                            Meus Arquivos
+                        </h2>
+                        <div class="flex items-center space-x-2 text-sm text-gray-600">
+                            <i class="fas fa-database"></i>
+                            <span>Filebin.net + Realtime DB</span>
+                        </div>
+                    </div>
+                    
+                    ${uploadSection}
+                    ${fileStats}
+                    
+                    <div class="space-y-4">
+                        <h3 class="text-xl font-semibold text-gray-800 flex items-center">
+                            <i class="fas fa-list mr-2"></i>
+                            Lista de Arquivos
+                            <span class="ml-2 bg-gray-100 text-gray-600 px-2 py-1 rounded-full text-sm">${state.files.length}</span>
+                        </h3>
+                        <div class="grid gap-4">
+                            ${state.loading && state.files.length === 0 ? `
+                                <div class="text-center py-10">
+                                    <div class="loading-spinner inline-block w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full mb-2"></div>
+                                    <p class="text-gray-600">Carregando arquivos...</p>
+                                </div>
+                            ` : fileList}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderMainContent(state) {
+            return `<main class="min-h-screen bg-gray-50">${renderFileListView(state)}</main>`;
+        }
+
+        function renderApp() {
+            const appDiv = document.getElementById('app');
+            if (appDiv) {
+                appDiv.innerHTML = renderHeader(appState) + renderMainContent(appState);
+            }
+
+            useEffect(() => {
+                subscribeToFiles();
+            }, [appState.isAuthReady, appState.userId, appState.isAdmin, db], 'FileSubscriptionEffect');
+        }
+
+        // --- Inicialização da Aplicação ---
+        window.setAppState = setAppState;
+        window.handleGoogleLogin = handleGoogleLogin; 
+        window.handleLogout = handleLogout;
+        window.handleFileUpload = handleFileUpload; 
+        window.handleDeleteFile = handleDeleteFile;
+        window.handleDownloadFile = handleDownloadFile;
+        
+        loadInitialState();
+        renderApp();
+
+    </script>
+</body>
+</html>
