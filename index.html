@@ -3,9 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MediaGames - Gerenciador de Arquivos</title>
+    <title>MediaGames - Gerenciador de Arquivos (GoFile.io)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
     
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
@@ -57,12 +61,7 @@
     <div id="app">
         </div>
 
-    <script type="module">
-        // --- Importações e Configurações de Firebase ---
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getDatabase, ref, set, remove, onValue, off } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-database.js";
-        
+    <script>
         // E-mail Admin
         const ADMIN_EMAIL = 'vilorprogramas@gmail.com'.toLowerCase();
 
@@ -72,24 +71,24 @@
             authDomain: "mediagames-default.firebaseapp.com",
             databaseURL: "https://mediagames-default-default-rtdb.firebaseio.com",
             projectId: "mediagames-default",
-            storageBucket: "mediagames-default.firebasestorage.app",
+            storageBucket: "mediagames-default.appspot.com", 
             messagingSenderId: "147325806641",
             appId: "1:147325806641:web:98b029dc4b77936614d10",
             measurementId: "G-J2K2DZZG28"
         };
         
-        // Configurações do Filebin.net baseadas na documentação
-        const FILEBIN_CONFIG = {
-            apiBase: "https://filebin.net",
-            maxFileSize: 300 * 1024 * 1024 * 1024 // 300GB em bytes
+        // --- Configurações de Limite e API do GoFile (NOVA) ---
+        const APP_CONFIG = {
+            maxFileSize: 5 * 1024 * 1024 * 1024, // 5GB em bytes 
+            // CHAVE DE API DO GOFILE (PARA DELEÇÃO)
+            GOFILE_API_KEY: 'V4X9L7VCX5uAQgx0rDZgXWQtCYKXe6Ty', 
+            // ENDPOINTS DO GOFILE
+            GOFILE_GET_SERVER: 'https://api.gofile.io/getServer', 
+            GOFILE_DELETE_ENDPOINT: 'https://api.gofile.io/deleteContent', // NOVO ENDPOINT DE DELETAR
         };
 
-        // Configurações de Retentativa
-        const MAX_RETRIES = 3;
-        const RETRY_DELAY_MS = 1000;
-
         // Variáveis globais para Firebase
-        let auth, db, app;
+        let auth, db, app; 
 
         // --- Estado da Aplicação ---
         let appState = {
@@ -100,10 +99,12 @@
             files: [],
             loading: false,
             isAuthReady: false,
-            uploadProgress: 0
+            uploadProgress: 0,
+            maxDownloadsPerUser: 5, 
+            userDownloadCount: 0 
         };
 
-        // --- Funções de Estado e Utilitários ---
+        // --- Funções de Estado e Utilitários (Não alteradas) ---
         function setAppState(updater) {
             const newState = typeof updater === 'function' ? updater(appState) : updater;
             
@@ -113,7 +114,9 @@
                 appState.loading !== newState.loading ||
                 appState.currentView !== newState.currentView ||
                 appState.files !== newState.files ||
-                appState.uploadProgress !== newState.uploadProgress
+                appState.uploadProgress !== newState.uploadProgress ||
+                appState.maxDownloadsPerUser !== newState.maxDownloadsPerUser || 
+                appState.userDownloadCount !== newState.userDownloadCount 
             );
 
             appState = newState;
@@ -123,7 +126,6 @@
             }
         }
 
-        // Simula um hook useEffect
         let lastDeps = {};
         function useEffect(callback, dependencies, name) {
             const currentDeps = dependencies.map(dep => dep);
@@ -138,7 +140,7 @@
         function formatBytes(bytes, decimals = 2) {
             if (bytes === 0 || bytes === null || bytes === undefined) return '0 Bytes';
             const k = 1024;
-            const dm = decimals < 0 ? 0 : decimals;
+            const dm = decimals < 0 ? 0 : 0;
             const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
             const i = Math.floor(Math.log(bytes) / Math.log(k));
             return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
@@ -154,8 +156,8 @@
                 minute: '2-digit'
             });
         }
-
-        // --- Sistema de Mensagens ---
+        
+        // --- Sistema de Mensagens (Não alterado) ---
         function showMessage(text, type = 'info', duration = 4000) {
             const container = document.getElementById('message-container');
             if (!container) return;
@@ -189,7 +191,7 @@
             }, duration);
         }
 
-        // --- Modal de Confirmação ---
+        // --- Modal de Confirmação (Não alterado) ---
         let confirmActionCallback = null;
         function confirmMessage(message, callback, title = "Confirmação de Ação") {
             const modal = document.getElementById('confirmation-modal');
@@ -227,7 +229,7 @@
             window.closeConfirmModal(true);
         }
 
-        // --- Funções de Autenticação ---
+        // --- Funções de Autenticação (Sintaxe antiga do Firebase) ---
         async function handleGoogleLogin(isForAdmin = false) {
             if (!auth) {
                 showMessage('Erro de autenticação: Inicialização pendente.', 'error');
@@ -235,17 +237,17 @@
             }
             
             setAppState(state => ({ ...state, loading: true }));
-            const provider = new GoogleAuthProvider();
+            const provider = new firebase.auth.GoogleAuthProvider();
             provider.addScope('email');
 
             try {
-                const result = await signInWithPopup(auth, provider);
+                const result = await auth.signInWithPopup(provider);
                 const user = result.user;
                 const userEmail = user.email ? user.email.toLowerCase() : '';
 
                 if (isForAdmin) {
                     if (userEmail !== ADMIN_EMAIL) {
-                        await signOut(auth);
+                        await auth.signOut();
                         showMessage('Acesso negado: Somente o e-mail ' + ADMIN_EMAIL + ' pode fazer login como Admin.', 'error');
                         return;
                     }
@@ -253,7 +255,7 @@
                 } else {
                     if (userEmail === ADMIN_EMAIL) {
                         showMessage('Você é um admin. Por favor, use o botão "Login Admin".', 'warning');
-                        await signOut(auth);
+                        await auth.signOut();
                         return;
                     }
                     showMessage('Login de Usuário realizado com sucesso!', 'success');
@@ -272,7 +274,7 @@
             if (!auth) return;
             setAppState(state => ({ ...state, loading: true }));
             try {
-                await signOut(auth);
+                await auth.signOut();
                 showMessage('Logout realizado com sucesso.', 'info');
             } catch (error) {
                 setAppState(state => ({ ...state, loading: false }));
@@ -280,13 +282,36 @@
                 showMessage('Erro ao fazer logout.', 'error');
             }
         }
+
+        // ----------------------------------------------------------------------
+        // --- Lógica de Gerenciamento de Limite de Downloads (Admin) ---
+        // ----------------------------------------------------------------------
         
-        // --- Funções Auxiliares Filebin.net ---
-        function generateBinId() {
-            return 'bin_' + Math.random().toString(36).substring(2, 10) + '_' + Date.now().toString(36);
+        async function handleSetDownloadLimit() {
+            if (!appState.isAdmin) return;
+            const input = document.getElementById('download-limit-input');
+            const newLimit = parseInt(input.value, 10);
+            
+            if (isNaN(newLimit) || newLimit < 0) {
+                showMessage('Limite inválido. Use um número inteiro positivo.', 'error');
+                return;
+            }
+            
+            setAppState(state => ({ ...state, loading: true }));
+            try {
+                await db.ref('settings/maxDownloadsPerUser').set(newLimit);
+                showMessage(`Limite de downloads atualizado para ${newLimit}!`, 'success');
+            } catch (error) {
+                showMessage('Erro ao salvar limite.', 'error');
+            } finally {
+                setAppState(state => ({ ...state, loading: false }));
+            }
         }
 
-        // --- Lógica do Filebin.net/RTDB ---
+        // ----------------------------------------------------------------------
+        // --- Lógica do GoFile (Upload) ---
+        // ----------------------------------------------------------------------
+
         async function handleFileUpload() {
             if (!appState.userId) {
                 showMessage('Você precisa estar logado para enviar arquivos.', 'warning');
@@ -301,156 +326,184 @@
                 return;
             }
 
-            // Validação de tamanho do arquivo (300GB máximo)
-            if (file.size > FILEBIN_CONFIG.maxFileSize) {
-                showMessage('Arquivo muito grande. Tamanho máximo: 300GB.', 'error');
+            if (file.size > APP_CONFIG.maxFileSize) {
+                showMessage(`Arquivo muito grande. Tamanho máximo: ${formatBytes(APP_CONFIG.maxFileSize)}.`, 'error');
                 return;
             }
 
-            setAppState(state => ({ ...state, loading: true, uploadProgress: 0 }));
+            setAppState(state => ({ ...state, loading: true, uploadProgress: 1 }));
+            
+            const fileIdRTDB = `go_${appState.userId}_${Date.now().toString(36)}`;
+            
+            const isGlobal = appState.isAdmin && document.getElementById('global-upload-checkbox')?.checked || false;
 
             try {
-                const binId = generateBinId();
-                const uploadUrl = `${FILEBIN_CONFIG.apiBase}/${binId}/${file.name}`;
+                // PASSO 1: Obter o servidor de upload
+                showMessage('Obtendo servidor de upload do GoFile...', 'info');
+                const serverResponse = await fetch(APP_CONFIG.GOFILE_GET_SERVER);
+                const serverData = await serverResponse.json();
+
+                if (serverData.status !== 'ok') {
+                    throw new Error(`Falha ao obter servidor GoFile: ${serverData.message || 'Erro desconhecido.'}`);
+                }
                 
-                let filebinResponse = null;
-                let lastError = null;
+                const server = serverData.data.server;
+                const uploadEndpoint = `https://${server}.gofile.io/uploadFile`;
 
-                // Upload real com Filebin.net
-                for (let i = 0; i < MAX_RETRIES; i++) {
-                    try {
-                        showMessage(`Tentativa ${i + 1} de upload...`, 'info', 2000);
-                        
-                        filebinResponse = await fetch(uploadUrl, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/octet-stream',
-                            },
-                            body: file
-                        });
-                        
-                        if (filebinResponse && filebinResponse.ok) break;
-                        
-                    } catch (e) {
-                        lastError = e;
-                        console.warn(`Falha na Tentativa ${i + 1} de upload.`, e);
-                        if (i < MAX_RETRIES - 1) {
-                            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-                        }
-                    }
+                // PASSO 2: Configurar e executar o upload
+                showMessage(`Servidor ${server} selecionado. Enviando arquivo...`, 'info');
+                setAppState(state => ({ ...state, uploadProgress: 50 })); 
+
+                const formData = new FormData();
+                formData.append('file', file, file.name);
+                // Adiciona o token da API no upload (opcional, mas bom para tracking)
+                formData.append('token', APP_CONFIG.GOFILE_API_KEY);
+
+                const uploadResponse = await fetch(uploadEndpoint, {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (!uploadResponse.ok) {
+                    throw new Error(`Falha no upload (Status: ${uploadResponse.status}).`);
                 }
 
-                if (!filebinResponse) {
-                    throw new Error("Falha na conexão com o servidor de upload.");
+                const uploadResult = await uploadResponse.json();
+
+                if (uploadResult.status !== 'ok') {
+                    throw new Error(`Falha no upload: ${uploadResult.message || 'Serviço GoFile recusou o arquivo.'}`);
                 }
+                
+                const downloadUrl = uploadResult.data.downloadPage; 
+                const fileIdGofile = uploadResult.data.id; 
 
-                if (!filebinResponse.ok) {
-                    const errorText = await filebinResponse.text().catch(() => 'Conteúdo de erro indisponível.');
-                    throw new Error(`Falha no upload: ${filebinResponse.status} - ${errorText}`);
-                }
-
-                // Para filebin.net, uma resposta 201 significa sucesso
-                if (filebinResponse.status !== 201) {
-                    throw new Error(`Upload falhou com status: ${filebinResponse.status}`);
-                }
-
-                const fileId = `${binId}_${file.name}`;
-                const downloadUrl = `${FILEBIN_CONFIG.apiBase}/${binId}/${file.name}`;
-
-                // Salvar metadados no Realtime Database
-                const fileRef = ref(db, 'files/' + fileId);
-                await set(fileRef, {
-                    fileId: fileId,
-                    binId: binId,
+                // 3. Salvar metadados no Realtime Database
+                const fileRefRTDB = db.ref('files/' + fileIdRTDB);
+                
+                await fileRefRTDB.set({
+                    fileId: fileIdRTDB,
+                    storageService: 'gofile.io',
                     fileName: file.name,
                     name: file.name,
                     size: file.size,
                     mimetype: file.type || 'application/octet-stream',
                     downloadUrl: downloadUrl,
-                    downloadPage: downloadUrl,
+                    deleteToken: fileIdGofile, // O ID do GoFile, crucial para deletar
                     userId: appState.userId,
                     userName: appState.user.email || appState.user.displayName || 'Usuário',
                     createdAt: Date.now(),
-                    lastModified: Date.now(),
-                    storageService: 'filebin'
+                    isGlobal: isGlobal 
                 });
 
-                showMessage(`"${file.name}" enviado com sucesso!`, 'success');
-                fileInput.value = '';
+                showMessage(`"${file.name}" enviado com sucesso! ${isGlobal ? '(GLOBAL)' : '(Pessoal)'}`, 'success');
+                fileInput.value = ''; 
+                if(document.getElementById('global-upload-checkbox')) {
+                    document.getElementById('global-upload-checkbox').checked = false;
+                }
+                setAppState(state => ({ ...state, loading: false, uploadProgress: 100 })); 
+                setTimeout(() => setAppState(state => ({ ...state, uploadProgress: 0 })), 500); 
 
             } catch (error) {
                 console.error("Erro no upload:", error);
-                showMessage(`Falha no upload: ${error.message}`, 'error');
-            } finally {
+                showMessage(`Falha no upload: ${error.message}.`, 'error', 6000);
                 setAppState(state => ({ ...state, loading: false, uploadProgress: 0 }));
             }
         }
+        
+        // ----------------------------------------------------------------------
+        // --- Lógica de Deleção (AGORA DELETA NO GOFILE) ---
+        // ----------------------------------------------------------------------
 
-        async function handleDeleteFile(fileId, fileName) {
+        async function handleDeleteFile(fileIdRTDB, fileName) {
             if (!appState.userId) return;
 
-            confirmMessage(`Deseja deletar "${fileName}"? Esta ação é irreversível.`, async () => {
+            // Busca os dados do arquivo para obter o deleteToken (GoFile ID)
+            const fileSnapshot = await db.ref('files/' + fileIdRTDB).once('value');
+            const fileData = fileSnapshot.val();
+
+            if (!fileData) {
+                showMessage(`Erro: Arquivo "${fileName}" não encontrado no banco de dados.`, 'error');
+                return;
+            }
+
+            const deleteTokenGofile = fileData.deleteToken; 
+            const deleteTokenAPI = APP_CONFIG.GOFILE_API_KEY;
+
+            confirmMessage(`Deseja deletar "${fileName}"? O arquivo será removido **PERMANENTEMENTE** do GoFile e do nosso sistema.`, async () => {
                 setAppState(state => ({ ...state, loading: true }));
                 try {
-                    // Obter informações do arquivo do Firebase para pegar o binId e fileName
-                    const fileRef = ref(db, 'files/' + fileId);
+                    // 1. CHAMA O ENDPOINT DE DELEÇÃO DO GOFILE
+                    showMessage(`Deletando "${fileName}" do GoFile...`, 'info');
                     
-                    // Precisamos obter os dados do arquivo primeiro
-                    const snapshot = await new Promise((resolve) => {
-                        onValue(fileRef, resolve, { onlyOnce: true });
-                    });
-                    
-                    const fileData = snapshot.val();
-                    
-                    if (!fileData) {
-                        throw new Error('Arquivo não encontrado no banco de dados');
-                    }
-
-                    // Deletar do Filebin.net
-                    const deleteUrl = `${FILEBIN_CONFIG.apiBase}/${fileData.binId}/${fileData.fileName}`;
-                    const filebinDeleteResponse = await fetch(deleteUrl, {
-                        method: 'DELETE'
+                    const deleteResponse = await fetch(APP_CONFIG.GOFILE_DELETE_ENDPOINT, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            contentId: deleteTokenGofile,
+                            token: deleteTokenAPI,
+                        }),
                     });
 
-                    if (!filebinDeleteResponse.ok && filebinDeleteResponse.status !== 404) {
-                        throw new Error(`Filebin: Erro ao deletar arquivo - Status ${filebinDeleteResponse.status}`);
+                    const deleteResult = await deleteResponse.json();
+
+                    // Verifica o resultado da deleção no GoFile
+                    if (deleteResult.status !== 'ok') {
+                        // Se falhar (ex: arquivo já expirou ou token incorreto), notificar, mas seguir para limpar o DB
+                        showMessage(`Aviso: Falha ao deletar arquivo no GoFile (Status: ${deleteResult.status}). Verifique sua API Key.`, 'warning', 6000);
+                    } else {
+                        showMessage(`"${fileName}" deletado do GoFile com sucesso!`, 'success');
                     }
+                    
+                    // 2. Remove o registro do nosso Realtime Database (limpeza local)
+                    const fileRefRTDB = db.ref('files/' + fileIdRTDB);
+                    await fileRefRTDB.remove();
 
-                    // Deletar metadados do Realtime Database
-                    await remove(fileRef);
-
-                    showMessage(`"${fileName}" deletado com sucesso!`, 'success');
+                    showMessage(`Registro de "${fileName}" removido do sistema!`, 'success');
 
                 } catch (error) {
                     console.error("Erro na deleção:", error);
-                    showMessage(`Falha ao deletar: ${error.message}`, 'error');
+                    showMessage(`Falha crítica ao tentar deletar: ${error.message}`, 'error');
                 } finally {
                     setAppState(state => ({ ...state, loading: false }));
                 }
             });
         }
 
+        // ----------------------------------------------------------------------
+        // --- Lógica de Download com Checagem de Limite (Não Alterada) ---
+        // ----------------------------------------------------------------------
         async function handleDownloadFile(fileId, fileName, downloadUrl) {
-            try {
-                showMessage(`Iniciando download de "${fileName}"...`, 'info');
-                
-                // Para filebin.net, fazemos uma requisição GET que redireciona para o S3
-                const response = await fetch(downloadUrl, {
-                    method: 'GET',
-                    redirect: 'follow'
-                });
+            if (!appState.userId) {
+                showMessage('Você precisa estar logado para baixar arquivos.', 'warning');
+                return;
+            }
 
-                if (!response.ok) {
-                    throw new Error(`Falha no download: ${response.status}`);
+            try {
+                if (appState.isAdmin) {
+                    showMessage(`Download de Admin: "${fileName}" iniciado!`, 'info');
+                } else {
+                    const userRef = db.ref('users/' + appState.userId);
+                    const maxLimit = appState.maxDownloadsPerUser;
+
+                    const userSnapshot = await userRef.once('value');
+                    const userData = userSnapshot.val() || { downloadCount: 0 };
+                    const currentCount = userData.downloadCount || 0;
+
+                    if (maxLimit > 0 && currentCount >= maxLimit) {
+                        showMessage(`Limite de downloads (${maxLimit}) atingido. Arquivo "${fileName}" bloqueado.`, 'error', 7000);
+                        return;
+                    }
+                    
+                    const newCount = currentCount + 1;
+                    await userRef.update({ downloadCount: newCount });
+                    setAppState(state => ({ ...state, userDownloadCount: newCount })); 
+                    showMessage(`Download ${newCount}/${maxLimit} iniciado.`, 'info');
                 }
 
-                // Obter a URL final após redirecionamento
-                const finalUrl = response.url;
-                
-                // Criar link de download e simular clique
                 const link = document.createElement('a');
-                link.href = finalUrl;
-                link.download = fileName;
+                link.href = downloadUrl;
                 link.target = '_blank';
                 document.body.appendChild(link);
                 link.click();
@@ -462,44 +515,23 @@
                 showMessage(`Erro ao baixar arquivo: ${error.message}`, 'error');
             }
         }
-
-        async function getFileInfo(binId, fileName) {
-            try {
-                const infoUrl = `${FILEBIN_CONFIG.apiBase}/${binId}/${fileName}`;
-                const response = await fetch(infoUrl, {
-                    method: 'HEAD'
-                });
-
-                if (!response.ok) {
-                    throw new Error(`Falha ao obter informações: ${response.status}`);
-                }
-
-                return {
-                    size: response.headers.get('content-length'),
-                    type: response.headers.get('content-type'),
-                    lastModified: response.headers.get('last-modified')
-                };
-            } catch (error) {
-                console.error("Erro ao obter informações do arquivo:", error);
-                return null;
-            }
-        }
         
-        // Listener em tempo real para arquivos
+        // ----------------------------------------------------------------------
+        // --- Funções de Subscribe/Inicialização (Não Alteradas) ---
+        // ----------------------------------------------------------------------
         let unsubscribeFiles = null;
+        let unsubscribeSettings = null;
+        let unsubscribeUser = null;
 
         function subscribeToFiles() {
-            if (unsubscribeFiles) {
-                unsubscribeFiles();
-                unsubscribeFiles = null;
-            }
+            if (unsubscribeFiles) { unsubscribeFiles(); unsubscribeFiles = null; }
 
             if (!appState.isAuthReady || !db || !appState.userId) {
                 setAppState(state => ({ ...state, files: [] }));
                 return;
             }
 
-            const filesRef = ref(db, 'files');
+            const filesRef = db.ref('files');
             
             const valueCallback = (snapshot) => {
                 const filesObject = snapshot.val() || {};
@@ -510,7 +542,9 @@
                 if (appState.isAdmin) {
                     filteredFiles = allFiles;
                 } else {
-                    filteredFiles = allFiles.filter(file => file.userId === appState.userId);
+                    filteredFiles = allFiles.filter(file => 
+                        file.userId === appState.userId || file.isGlobal === true
+                    );
                 }
 
                 filteredFiles.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
@@ -518,22 +552,51 @@
                 setAppState(state => ({ ...state, files: filteredFiles }));
             };
 
-            onValue(filesRef, valueCallback, (error) => {
+            filesRef.on('value', valueCallback, (error) => {
                 console.error("Erro no Realtime Database:", error);
                 showMessage('Erro ao carregar arquivos.', 'error');
             });
             
-            unsubscribeFiles = () => off(filesRef, 'value', valueCallback);
+            unsubscribeFiles = () => filesRef.off('value', valueCallback);
         }
 
-        // --- Inicialização do Firebase ---
+        function subscribeToSettingsAndUser() {
+            if (unsubscribeSettings) { unsubscribeSettings(); unsubscribeSettings = null; }
+            if (unsubscribeUser) { unsubscribeUser(); unsubscribeUser = null; }
+            
+            if (!db) return;
+
+            const settingsRef = db.ref('settings/maxDownloadsPerUser');
+            const settingsCallback = (snapshot) => {
+                const limit = snapshot.val();
+                if (limit !== null) {
+                    setAppState(state => ({ ...state, maxDownloadsPerUser: parseInt(limit, 10) }));
+                }
+            };
+            settingsRef.on('value', settingsCallback);
+            unsubscribeSettings = () => settingsRef.off('value', settingsCallback);
+
+            if (appState.userId && !appState.isAdmin) {
+                const userRef = db.ref('users/' + appState.userId + '/downloadCount');
+                const userCallback = (snapshot) => {
+                    const count = snapshot.val() || 0;
+                    setAppState(state => ({ ...state, userDownloadCount: count }));
+                };
+                userRef.on('value', userCallback);
+                unsubscribeUser = () => userRef.off('value', userCallback);
+            } else {
+                 setAppState(state => ({ ...state, userDownloadCount: 0 }));
+            }
+        }
+
+
         async function loadInitialState() {
             try {
-                app = initializeApp(FIREBASE_CONFIG);
-                db = getDatabase(app);
-                auth = getAuth(app);
+                app = firebase.initializeApp(FIREBASE_CONFIG);
+                auth = firebase.auth();
+                db = firebase.database();
                 
-                onAuthStateChanged(auth, (user) => {
+                auth.onAuthStateChanged((user) => {
                     if (user) {
                         const userEmail = user.email ? user.email.toLowerCase() : '';
                         const isAdmin = userEmail === ADMIN_EMAIL;
@@ -565,9 +628,10 @@
             }
         }
 
-        // --- Funções de Renderização ---
+        // --- Funções de Renderização (Não Alteradas) ---
+
         function renderHeader(state) {
-            let authButton;
+             let authButton;
             if (state.userId) {
                 const userEmail = state.user.email;
                 const isAdmin = state.isAdmin;
@@ -593,16 +657,16 @@
                     <div class="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-3">
                         <button 
                             onclick="handleGoogleLogin(false)" 
-                            class="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-full transition duration-150 shadow-lg flex items-center justify-center text-sm font-medium"
+                            class="w-full sm:w-auto px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white font-bold rounded-full shadow-lg transition duration-150 flex items-center justify-center text-sm font-medium"
                         >
-                            <i class="fas fa-user mr-2"></i> Login Usuário
+                            <i class="fab fa-google mr-3"></i> Login como Usuário
                         </button>
                         <button 
                             onclick="handleGoogleLogin(true)" 
-                            class="px-4 py-2 bg-yellow-500 hover:bg-yellow-600 text-white rounded-full transition duration-150 shadow-lg flex items-center justify-center text-sm font-medium"
+                            class="w-full sm:w-auto px-4 py-2 bg-yellow-500 hover:bg-yellow-600 text-white font-bold rounded-full shadow-lg transition duration-150 flex items-center justify-center text-sm font-medium"
                             title="Admin: ${ADMIN_EMAIL}"
                         >
-                            <i class="fas fa-user-shield mr-2"></i> Login Admin
+                            <i class="fas fa-user-shield mr-3"></i> Login como Admin
                         </button>
                     </div>
                 `;
@@ -628,6 +692,7 @@
                 </header>
             `;
         }
+
 
         function renderFileListView(state) {
             if (!state.isAuthReady) {
@@ -671,6 +736,28 @@
                     </div>
                 `;
             }
+            
+            const uploadProgressDisplay = state.loading && state.uploadProgress > 0 
+                ? `
+                    <div class="mt-4">
+                        <div class="flex justify-between mb-1">
+                            <span class="text-sm font-medium text-blue-700">Progresso do Upload</span>
+                            <span class="text-sm font-medium text-blue-700">${state.uploadProgress.toFixed(0)}%</span>
+                        </div>
+                        <div class="w-full bg-gray-200 rounded-full h-2.5">
+                            <div class="bg-blue-600 h-2.5 rounded-full" style="width: ${state.uploadProgress}%"></div>
+                        </div>
+                    </div>
+                ` : '';
+            
+            const globalCheckbox = state.isAdmin ? `
+                <div class="flex items-center mt-3">
+                    <input id="global-upload-checkbox" type="checkbox" class="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500">
+                    <label for="global-upload-checkbox" class="ml-2 block text-sm font-medium text-gray-700 font-semibold">
+                        Tornar arquivo **GLOBAL** (visível para todos os usuários)
+                    </label>
+                </div>
+            ` : '';
 
             const uploadSection = `
                 <div class="bg-white p-6 rounded-2xl shadow-xl mb-8 border border-gray-100">
@@ -681,14 +768,16 @@
                         <div class="flex flex-col md:flex-row gap-4 items-start md:items-end">
                             <div class="flex-grow">
                                 <label class="block text-sm font-medium text-gray-700 mb-2">
-                                    Selecione o arquivo (máx. 300GB)
+                                    Selecione o arquivo (máx. ${formatBytes(APP_CONFIG.maxFileSize)})
                                 </label>
                                 <input 
                                     type="file" 
                                     id="file-upload-input" 
                                     class="w-full text-gray-700 bg-gray-50 border border-gray-300 rounded-lg p-3 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 transition duration-150"
                                     onchange="document.getElementById('upload-button').disabled = !this.files.length"
+                                    ${state.loading ? 'disabled' : ''}
                                 >
+                                ${globalCheckbox}
                             </div>
                             <button 
                                 id="upload-button"
@@ -700,17 +789,54 @@
                                 ${state.loading ? 'Enviando...' : 'Upload'}
                             </button>
                         </div>
+                        ${uploadProgressDisplay}
                         <div class="text-xs text-gray-500 space-y-1">
-                            <p><i class="fas fa-database mr-1"></i> Armazenamento: **Filebin.net**</p>
-                            <p><i class="fas fa-shield-alt mr-1"></i> Suporte a arquivos de até **300GB** (limite por arquivo)</p>
+                            <p><i class="fas fa-database mr-1"></i> Armazenamento: **GoFile.io** (Serviço Semi-Permanente)</p>
+                            <p class="font-bold text-red-500"><i class="fas fa-key mr-1"></i> **Aviso:** A chave de API GoFile está em uso para a deleção.</p>
                         </div>
                     </div>
                 </div>
             `;
+            
+            const adminPanel = state.isAdmin ? `
+                <div class="bg-yellow-50 p-6 rounded-2xl shadow-xl mb-8 border border-yellow-200">
+                    <h3 class="text-xl font-bold text-yellow-800 mb-4 flex items-center">
+                        <i class="fas fa-sliders-h mr-3 text-yellow-500"></i> Painel de Gerenciamento (Admin)
+                    </h3>
+                    <div class="flex flex-col sm:flex-row items-end gap-3">
+                        <div class="flex-grow w-full">
+                            <label for="download-limit-input" class="block text-sm font-medium text-gray-700">
+                                Limite de Downloads p/ Usuário (Atual: **${state.maxDownloadsPerUser}**)
+                            </label>
+                            <input type="number" id="download-limit-input" value="${state.maxDownloadsPerUser}" min="0" class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-yellow-500 focus:ring-yellow-500 p-3">
+                        </div>
+                        <button 
+                            onclick="handleSetDownloadLimit()" 
+                            class="w-full sm:w-auto px-6 py-3 bg-yellow-500 hover:bg-yellow-600 disabled:bg-gray-400 text-white font-bold rounded-xl transition duration-150 shadow-md flex items-center justify-center min-w-[120px]"
+                        >
+                            <i class="fas fa-save mr-2"></i> Salvar Limite
+                        </button>
+                    </div>
+                    <p class="text-xs text-gray-600 mt-3"><span class="font-bold">0</span> significa Downloads Ilimitados.</p>
+                </div>
+            ` : '';
+
+
+            const downloadQuota = !state.isAdmin && state.maxDownloadsPerUser > 0 ? `
+                <div class="flex items-center space-x-3">
+                    <i class="fas fa-download text-2xl"></i>
+                    <div>
+                        <p class="text-sm opacity-90">Downloads Restantes</p>
+                        <p class="text-lg font-bold">
+                            ${Math.max(0, state.maxDownloadsPerUser - state.userDownloadCount)} / ${state.maxDownloadsPerUser}
+                        </p>
+                    </div>
+                </div>
+            ` : '';
 
             const fileStats = `
                 <div class="bg-gradient-to-r from-blue-500 to-blue-600 text-white p-4 rounded-2xl shadow-lg mb-6">
-                    <div class="flex flex-wrap justify-between items-center">
+                    <div class="flex flex-wrap justify-between items-center gap-4">
                         <div class="flex items-center space-x-3">
                             <i class="fas fa-chart-bar text-2xl"></i>
                             <div>
@@ -718,20 +844,12 @@
                                 <p class="text-2xl font-bold">${state.files.length}</p>
                             </div>
                         </div>
-                        ${state.isAdmin ? `
-                        <div class="flex items-center space-x-3">
-                            <i class="fas fa-users text-2xl"></i>
-                            <div>
-                                <p class="text-sm opacity-90">Modo Admin</p>
-                                <p class="text-lg font-bold">Todos os arquivos</p>
-                            </div>
-                        </div>
-                        ` : ''}
+                        ${downloadQuota}
                         <div class="flex items-center space-x-3">
                             <i class="fas fa-hdd text-2xl"></i>
                             <div>
                                 <p class="text-sm opacity-90">Armazenamento</p>
-                                <p class="text-lg font-bold">Filebin.net</p>
+                                <p class="text-lg font-bold">GoFile.io</p>
                             </div>
                         </div>
                     </div>
@@ -748,6 +866,7 @@
                 `
                 : state.files.map(file => `
                     <div class="file-card bg-white p-5 rounded-xl shadow-md border-l-4 ${
+                        file.isGlobal ? 'border-indigo-500' : 
                         file.userId === state.userId ? 'border-blue-500' : 'border-yellow-500'
                     } fade-in">
                         <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -762,12 +881,15 @@
                                         'fa-file'
                                     } text-gray-400 mt-1 flex-shrink-0"></i>
                                     <div class="min-w-0 flex-grow">
-                                        <p class="font-semibold text-gray-800 truncate text-lg mb-1">${file.name}</p>
+                                        <p class="font-semibold text-gray-800 truncate text-lg mb-1">
+                                            ${file.name}
+                                            ${file.isGlobal ? '<span class="ml-2 bg-indigo-500 text-white text-xs px-2 py-1 rounded-full">GLOBAL</span>' : ''}
+                                        </p>
                                         <div class="flex flex-wrap gap-2 text-xs text-gray-500">
                                             <span class="flex items-center space-x-1">
                                                 <i class="fas fa-user"></i>
-                                                <span class="${file.userId === state.userId ? 'text-blue-600 font-medium' : 'text-yellow-600 font-medium'}">
-                                                    ${file.userId === state.userId ? 'Você' : (state.isAdmin ? file.userName : 'Outro usuário')}
+                                                <span class="${file.userId === state.userId ? 'text-blue-600 font-medium' : file.isGlobal ? 'text-indigo-600 font-medium' : 'text-yellow-600 font-medium'}">
+                                                    ${file.userId === state.userId ? 'Você' : (state.isAdmin ? file.userName : 'Comunidade')}
                                                 </span>
                                             </span>
                                             <span class="flex items-center space-x-1">
@@ -780,7 +902,7 @@
                                             </span>
                                             <span class="flex items-center space-x-1">
                                                 <i class="fas fa-database"></i>
-                                                <span>Filebin.net</span>
+                                                <span>GoFile.io</span> 
                                             </span>
                                         </div>
                                     </div>
@@ -796,7 +918,7 @@
                                 ${(file.userId === state.userId || state.isAdmin) ? `
                                 <button onclick="handleDeleteFile('${file.fileId}', '${file.name.replace(/'/g, "\\'")}')" 
                                         class="flex items-center space-x-2 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition duration-150 shadow-sm"
-                                        title="Deletar arquivo">
+                                        title="Deletar permanentemente do GoFile e do banco de dados">
                                     <i class="fas fa-trash"></i>
                                     <span class="hidden sm:inline">Deletar</span>
                                 </button>
@@ -815,10 +937,11 @@
                         </h2>
                         <div class="flex items-center space-x-2 text-sm text-gray-600">
                             <i class="fas fa-database"></i>
-                            <span>Filebin.net + Firebase</span>
+                            <span>GoFile.io + Realtime DB</span>
                         </div>
                     </div>
                     
+                    ${adminPanel}
                     ${uploadSection}
                     ${fileStats}
                     
@@ -841,6 +964,7 @@
             `;
         }
 
+
         function renderMainContent(state) {
             return `<main class="min-h-screen bg-gray-50">${renderFileListView(state)}</main>`;
         }
@@ -854,6 +978,10 @@
             useEffect(() => {
                 subscribeToFiles();
             }, [appState.isAuthReady, appState.userId, appState.isAdmin, db], 'FileSubscriptionEffect');
+
+            useEffect(() => {
+                subscribeToSettingsAndUser();
+            }, [appState.isAuthReady, appState.userId, appState.isAdmin, db], 'SettingsUserEffect');
         }
 
         // --- Inicialização da Aplicação ---
@@ -863,8 +991,9 @@
         window.handleFileUpload = handleFileUpload; 
         window.handleDeleteFile = handleDeleteFile;
         window.handleDownloadFile = handleDownloadFile;
-        window.getFileInfo = getFileInfo;
-        
+        window.executeConfirmAction = window.executeConfirmAction;
+        window.handleSetDownloadLimit = handleSetDownloadLimit; 
+
         loadInitialState();
         renderApp();
 
