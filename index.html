@@ -77,14 +77,15 @@
             measurementId: "G-J2K2DZZG28"
         };
         
-        // --- Configurações de Limite e API do GoFile (NOVA) ---
+        // --- Configurações de Limite e API do GoFile (RESTAURADO) ---
         const APP_CONFIG = {
-            maxFileSize: 5 * 1024 * 1024 * 1024, // 5GB em bytes 
-            // CHAVE DE API DO GOFILE (PARA DELEÇÃO)
+            // Limite de tamanho POR ARQUIVO (5GB)
+            maxFileSize: 5 * 1024 * 1024 * 1024, 
+            // CHAVE DE API DO GOFILE
             GOFILE_API_KEY: 'V4X9L7VCX5uAQgx0rDZgXWQtCYKXe6Ty', 
             // ENDPOINTS DO GOFILE
             GOFILE_GET_SERVER: 'https://api.gofile.io/getServer', 
-            GOFILE_DELETE_ENDPOINT: 'https://api.gofile.io/deleteContent', // NOVO ENDPOINT DE DELETAR
+            GOFILE_DELETE_ENDPOINT: 'https://api.gofile.io/deleteContent', 
         };
 
         // Variáveis globais para Firebase
@@ -100,8 +101,7 @@
             loading: false,
             isAuthReady: false,
             uploadProgress: 0,
-            maxDownloadsPerUser: 5, 
-            userDownloadCount: 0 
+            // REMOVIDOS: maxDownloadsPerUser e userDownloadCount (Limite não é por usuário)
         };
 
         // --- Funções de Estado e Utilitários (Não alteradas) ---
@@ -114,9 +114,7 @@
                 appState.loading !== newState.loading ||
                 appState.currentView !== newState.currentView ||
                 appState.files !== newState.files ||
-                appState.uploadProgress !== newState.uploadProgress ||
-                appState.maxDownloadsPerUser !== newState.maxDownloadsPerUser || 
-                appState.userDownloadCount !== newState.userDownloadCount 
+                appState.uploadProgress !== newState.uploadProgress 
             );
 
             appState = newState;
@@ -284,31 +282,6 @@
         }
 
         // ----------------------------------------------------------------------
-        // --- Lógica de Gerenciamento de Limite de Downloads (Admin) ---
-        // ----------------------------------------------------------------------
-        
-        async function handleSetDownloadLimit() {
-            if (!appState.isAdmin) return;
-            const input = document.getElementById('download-limit-input');
-            const newLimit = parseInt(input.value, 10);
-            
-            if (isNaN(newLimit) || newLimit < 0) {
-                showMessage('Limite inválido. Use um número inteiro positivo.', 'error');
-                return;
-            }
-            
-            setAppState(state => ({ ...state, loading: true }));
-            try {
-                await db.ref('settings/maxDownloadsPerUser').set(newLimit);
-                showMessage(`Limite de downloads atualizado para ${newLimit}!`, 'success');
-            } catch (error) {
-                showMessage('Erro ao salvar limite.', 'error');
-            } finally {
-                setAppState(state => ({ ...state, loading: false }));
-            }
-        }
-
-        // ----------------------------------------------------------------------
         // --- Lógica do GoFile (Upload) ---
         // ----------------------------------------------------------------------
 
@@ -326,6 +299,7 @@
                 return;
             }
 
+            // LIMITE POR ARQUIVO (5GB)
             if (file.size > APP_CONFIG.maxFileSize) {
                 showMessage(`Arquivo muito grande. Tamanho máximo: ${formatBytes(APP_CONFIG.maxFileSize)}.`, 'error');
                 return;
@@ -356,7 +330,6 @@
 
                 const formData = new FormData();
                 formData.append('file', file, file.name);
-                // Adiciona o token da API no upload (opcional, mas bom para tracking)
                 formData.append('token', APP_CONFIG.GOFILE_API_KEY);
 
                 const uploadResponse = await fetch(uploadEndpoint, {
@@ -411,7 +384,7 @@
         }
         
         // ----------------------------------------------------------------------
-        // --- Lógica de Deleção (AGORA DELETA NO GOFILE) ---
+        // --- Lógica de Deleção (Deleta no GoFile e no DB) ---
         // ----------------------------------------------------------------------
 
         async function handleDeleteFile(fileIdRTDB, fileName) {
@@ -448,9 +421,7 @@
 
                     const deleteResult = await deleteResponse.json();
 
-                    // Verifica o resultado da deleção no GoFile
                     if (deleteResult.status !== 'ok') {
-                        // Se falhar (ex: arquivo já expirou ou token incorreto), notificar, mas seguir para limpar o DB
                         showMessage(`Aviso: Falha ao deletar arquivo no GoFile (Status: ${deleteResult.status}). Verifique sua API Key.`, 'warning', 6000);
                     } else {
                         showMessage(`"${fileName}" deletado do GoFile com sucesso!`, 'success');
@@ -472,7 +443,7 @@
         }
 
         // ----------------------------------------------------------------------
-        // --- Lógica de Download com Checagem de Limite (Não Alterada) ---
+        // --- Lógica de Download (Sem checagem de limite por usuário) ---
         // ----------------------------------------------------------------------
         async function handleDownloadFile(fileId, fileName, downloadUrl) {
             if (!appState.userId) {
@@ -481,27 +452,8 @@
             }
 
             try {
-                if (appState.isAdmin) {
-                    showMessage(`Download de Admin: "${fileName}" iniciado!`, 'info');
-                } else {
-                    const userRef = db.ref('users/' + appState.userId);
-                    const maxLimit = appState.maxDownloadsPerUser;
-
-                    const userSnapshot = await userRef.once('value');
-                    const userData = userSnapshot.val() || { downloadCount: 0 };
-                    const currentCount = userData.downloadCount || 0;
-
-                    if (maxLimit > 0 && currentCount >= maxLimit) {
-                        showMessage(`Limite de downloads (${maxLimit}) atingido. Arquivo "${fileName}" bloqueado.`, 'error', 7000);
-                        return;
-                    }
-                    
-                    const newCount = currentCount + 1;
-                    await userRef.update({ downloadCount: newCount });
-                    setAppState(state => ({ ...state, userDownloadCount: newCount })); 
-                    showMessage(`Download ${newCount}/${maxLimit} iniciado.`, 'info');
-                }
-
+                showMessage(`Download de "${fileName}" iniciado!`, 'info');
+                
                 const link = document.createElement('a');
                 link.href = downloadUrl;
                 link.target = '_blank';
@@ -517,11 +469,9 @@
         }
         
         // ----------------------------------------------------------------------
-        // --- Funções de Subscribe/Inicialização (Não Alteradas) ---
+        // --- Funções de Subscribe/Inicialização ---
         // ----------------------------------------------------------------------
         let unsubscribeFiles = null;
-        let unsubscribeSettings = null;
-        let unsubscribeUser = null;
 
         function subscribeToFiles() {
             if (unsubscribeFiles) { unsubscribeFiles(); unsubscribeFiles = null; }
@@ -542,6 +492,7 @@
                 if (appState.isAdmin) {
                     filteredFiles = allFiles;
                 } else {
+                    // Usuários veem seus arquivos e arquivos globais
                     filteredFiles = allFiles.filter(file => 
                         file.userId === appState.userId || file.isGlobal === true
                     );
@@ -559,36 +510,6 @@
             
             unsubscribeFiles = () => filesRef.off('value', valueCallback);
         }
-
-        function subscribeToSettingsAndUser() {
-            if (unsubscribeSettings) { unsubscribeSettings(); unsubscribeSettings = null; }
-            if (unsubscribeUser) { unsubscribeUser(); unsubscribeUser = null; }
-            
-            if (!db) return;
-
-            const settingsRef = db.ref('settings/maxDownloadsPerUser');
-            const settingsCallback = (snapshot) => {
-                const limit = snapshot.val();
-                if (limit !== null) {
-                    setAppState(state => ({ ...state, maxDownloadsPerUser: parseInt(limit, 10) }));
-                }
-            };
-            settingsRef.on('value', settingsCallback);
-            unsubscribeSettings = () => settingsRef.off('value', settingsCallback);
-
-            if (appState.userId && !appState.isAdmin) {
-                const userRef = db.ref('users/' + appState.userId + '/downloadCount');
-                const userCallback = (snapshot) => {
-                    const count = snapshot.val() || 0;
-                    setAppState(state => ({ ...state, userDownloadCount: count }));
-                };
-                userRef.on('value', userCallback);
-                unsubscribeUser = () => userRef.off('value', userCallback);
-            } else {
-                 setAppState(state => ({ ...state, userDownloadCount: 0 }));
-            }
-        }
-
 
         async function loadInitialState() {
             try {
@@ -628,7 +549,7 @@
             }
         }
 
-        // --- Funções de Renderização (Não Alteradas) ---
+        // --- Funções de Renderização ---
 
         function renderHeader(state) {
              let authButton;
@@ -798,42 +719,6 @@
                 </div>
             `;
             
-            const adminPanel = state.isAdmin ? `
-                <div class="bg-yellow-50 p-6 rounded-2xl shadow-xl mb-8 border border-yellow-200">
-                    <h3 class="text-xl font-bold text-yellow-800 mb-4 flex items-center">
-                        <i class="fas fa-sliders-h mr-3 text-yellow-500"></i> Painel de Gerenciamento (Admin)
-                    </h3>
-                    <div class="flex flex-col sm:flex-row items-end gap-3">
-                        <div class="flex-grow w-full">
-                            <label for="download-limit-input" class="block text-sm font-medium text-gray-700">
-                                Limite de Downloads p/ Usuário (Atual: **${state.maxDownloadsPerUser}**)
-                            </label>
-                            <input type="number" id="download-limit-input" value="${state.maxDownloadsPerUser}" min="0" class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-yellow-500 focus:ring-yellow-500 p-3">
-                        </div>
-                        <button 
-                            onclick="handleSetDownloadLimit()" 
-                            class="w-full sm:w-auto px-6 py-3 bg-yellow-500 hover:bg-yellow-600 disabled:bg-gray-400 text-white font-bold rounded-xl transition duration-150 shadow-md flex items-center justify-center min-w-[120px]"
-                        >
-                            <i class="fas fa-save mr-2"></i> Salvar Limite
-                        </button>
-                    </div>
-                    <p class="text-xs text-gray-600 mt-3"><span class="font-bold">0</span> significa Downloads Ilimitados.</p>
-                </div>
-            ` : '';
-
-
-            const downloadQuota = !state.isAdmin && state.maxDownloadsPerUser > 0 ? `
-                <div class="flex items-center space-x-3">
-                    <i class="fas fa-download text-2xl"></i>
-                    <div>
-                        <p class="text-sm opacity-90">Downloads Restantes</p>
-                        <p class="text-lg font-bold">
-                            ${Math.max(0, state.maxDownloadsPerUser - state.userDownloadCount)} / ${state.maxDownloadsPerUser}
-                        </p>
-                    </div>
-                </div>
-            ` : '';
-
             const fileStats = `
                 <div class="bg-gradient-to-r from-blue-500 to-blue-600 text-white p-4 rounded-2xl shadow-lg mb-6">
                     <div class="flex flex-wrap justify-between items-center gap-4">
@@ -844,7 +729,13 @@
                                 <p class="text-2xl font-bold">${state.files.length}</p>
                             </div>
                         </div>
-                        ${downloadQuota}
+                        <div class="flex items-center space-x-3">
+                            <i class="fas fa-balance-scale text-2xl"></i>
+                            <div>
+                                <p class="text-sm opacity-90">Limite</p>
+                                <p class="text-lg font-bold">5 GB por Arquivo</p>
+                            </div>
+                        </div>
                         <div class="flex items-center space-x-3">
                             <i class="fas fa-hdd text-2xl"></i>
                             <div>
@@ -941,7 +832,6 @@
                         </div>
                     </div>
                     
-                    ${adminPanel}
                     ${uploadSection}
                     ${fileStats}
                     
@@ -978,10 +868,6 @@
             useEffect(() => {
                 subscribeToFiles();
             }, [appState.isAuthReady, appState.userId, appState.isAdmin, db], 'FileSubscriptionEffect');
-
-            useEffect(() => {
-                subscribeToSettingsAndUser();
-            }, [appState.isAuthReady, appState.userId, appState.isAdmin, db], 'SettingsUserEffect');
         }
 
         // --- Inicialização da Aplicação ---
@@ -991,8 +877,6 @@
         window.handleFileUpload = handleFileUpload; 
         window.handleDeleteFile = handleDeleteFile;
         window.handleDownloadFile = handleDownloadFile;
-        window.executeConfirmAction = window.executeConfirmAction;
-        window.handleSetDownloadLimit = handleSetDownloadLimit; 
 
         loadInitialState();
         renderApp();
