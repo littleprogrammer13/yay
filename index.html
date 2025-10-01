@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MediaGames - Gerenciador de Arquivos (Filebin)</title>
+    <title>MediaGames - Gerenciador de Arquivos (File.io)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     
@@ -61,8 +61,8 @@
         // --- Importações e Configurações de Firebase ---
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getDatabase, ref, set, remove, onValue, off } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-database.js";
-        
+        import { getDatabase, ref as dbRef, set, remove, onValue, off, get } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-database.js";
+
         // E-mail Admin
         const ADMIN_EMAIL = 'vilorprogramas@gmail.com'.toLowerCase();
 
@@ -72,17 +72,17 @@
             authDomain: "mediagames-default.firebaseapp.com",
             databaseURL: "https://mediagames-default-default-rtdb.firebaseio.com",
             projectId: "mediagames-default",
-            storageBucket: "mediagames-default.firebasestorage.app", 
+            storageBucket: "mediagames-default.appspot.com", 
             messagingSenderId: "147325806641",
             appId: "1:147325806641:web:98b029dc4b77936614d10",
             measurementId: "G-J2K2DZZG28"
         };
         
-        // --- Configurações do Filebin.net ---
-        const FILEBIN_CONFIG = {
-            apiBase: 'https://filebin.net/',
-            downloadBase: 'https://filebin.net/',
-            maxFileSize: 5 * 1024 * 1024 * 1024 // 5GB em bytes
+        // --- Configurações de Limite e API do File.io ---
+        const APP_CONFIG = {
+            maxFileSize: 5 * 1024 * 1024 * 1024, // 5GB em bytes 
+            // NOVO ENDPOINT PÚBLICO E SIMPLES
+            FILE_IO_ENDPOINT: 'https://file.io/', 
         };
 
         // Variáveis globais para Firebase
@@ -100,7 +100,7 @@
             uploadProgress: 0 
         };
 
-        // --- Funções de Estado e Utilitários ---
+        // --- Funções de Estado e Utilitários (Omitidas para brevidade, mas intactas) ---
         function setAppState(updater) {
             const newState = typeof updater === 'function' ? updater(appState) : updater;
             
@@ -120,7 +120,6 @@
             }
         }
 
-        // Simula um hook useEffect
         let lastDeps = {};
         function useEffect(callback, dependencies, name) {
             const currentDeps = dependencies.map(dep => dep);
@@ -224,7 +223,7 @@
             window.closeConfirmModal(true);
         }
 
-        // --- Funções de Autenticação ---
+        // --- Funções de Autenticação (Sem mudanças) ---
         async function handleGoogleLogin(isForAdmin = false) {
             if (!auth) {
                 showMessage('Erro de autenticação: Inicialização pendente.', 'error');
@@ -278,14 +277,8 @@
             }
         }
 
-        // --- Utilitário Filebin ---
-        function generateBinId() {
-            // Cria um ID de bin único para evitar conflitos (mediagames-{userId}-{timestamp_base36})
-            return `mediagames-${appState.userId}-${Date.now().toString(36)}`;
-        }
-        
         // ----------------------------------------------------------------------
-        // --- Lógica do Filebin.net + RTDB (UPLOAD com XHR) ---
+        // --- Lógica do File.io (Upload Revisado) ---
         // ----------------------------------------------------------------------
 
         async function handleFileUpload() {
@@ -303,143 +296,114 @@
             }
 
             // Validação de tamanho do arquivo
-            if (file.size > FILEBIN_CONFIG.maxFileSize) {
-                showMessage(`Arquivo muito grande. Tamanho máximo: ${formatBytes(FILEBIN_CONFIG.maxFileSize)}.`, 'error');
+            if (file.size > APP_CONFIG.maxFileSize) {
+                showMessage(`Arquivo muito grande. Tamanho máximo: ${formatBytes(APP_CONFIG.maxFileSize)}.`, 'error');
                 return;
             }
 
-            // Inicia o estado de carregamento e mostra progresso 0%
-            setAppState(state => ({ ...state, loading: true, uploadProgress: 0 }));
+            // File.io tem um limite de 100MB no plano gratuito.
+            if (file.size > 100 * 1024 * 1024) { 
+                showMessage('O File.io gratuito geralmente limita a 100MB. Seu arquivo pode falhar.', 'warning', 7000);
+            }
 
+            // Inicia o estado de carregamento
+            setAppState(state => ({ ...state, loading: true, uploadProgress: 1 }));
+            
+            const fileIdRTDB = `fi_${appState.userId}_${Date.now().toString(36)}`;
+            
             try {
-                // 1. Prepara o upload
-                const binId = generateBinId();
-                const fileIdRTDB = binId; 
-                const uploadUrl = FILEBIN_CONFIG.apiBase + binId + '/' + encodeURIComponent(file.name);
-                const downloadUrl = FILEBIN_CONFIG.downloadBase + binId + '/' + encodeURIComponent(file.name);
+                // 1. Configurar o upload usando FormData
+                const formData = new FormData();
+                formData.append('file', file, file.name); // O File.io espera o campo 'file'
+
+                // 2. Usar 'fetch' para simplicidade do endpoint
+                const response = await fetch(APP_CONFIG.FILE_IO_ENDPOINT, {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Falha no upload (Status: ${response.status}).`);
+                }
+
+                const result = await response.json();
+
+                if (!result.success) {
+                    throw new Error(`Falha no upload: ${result.message || 'Serviço recusou o arquivo.'}`);
+                }
                 
-                // 2. Executa o upload usando XMLHttpRequest (XHR)
-                await new Promise((resolve, reject) => {
-                    const xhr = new XMLHttpRequest();
-                    
-                    // --- Rastreamento de Progresso ---
-                    xhr.upload.addEventListener("progress", (event) => {
-                        if (event.lengthComputable) {
-                            const percentComplete = (event.loaded / event.total) * 100;
-                            setAppState(state => ({ ...state, uploadProgress: percentComplete }));
-                        }
-                    }, false);
+                const downloadUrl = result.link; 
+                const deleteKey = result.key; // Chave que identifica o arquivo no File.io
+                const expiry = result.expiry; // Data/hora de expiração
 
-                    // --- Evento de Conclusão (Sucesso) ---
-                    xhr.addEventListener("load", async () => {
-                        if (xhr.status >= 200 && xhr.status < 300) {
-                            
-                            // 3. Salvar metadados no Realtime Database
-                            const fileRef = ref(db, 'files/' + fileIdRTDB);
-                            
-                            try {
-                                await set(fileRef, {
-                                    fileId: fileIdRTDB,
-                                    binId: binId,
-                                    fileName: file.name,
-                                    name: file.name,
-                                    size: file.size,
-                                    mimetype: file.type || 'application/octet-stream',
-                                    downloadUrl: downloadUrl,
-                                    userId: appState.userId,
-                                    userName: appState.user.email || appState.user.displayName || 'Usuário',
-                                    createdAt: Date.now(),
-                                    lastModified: Date.now(),
-                                    storageService: 'filebin-net'
-                                });
-                                resolve(); // Resolve a Promise principal após salvar no RTDB
-                            } catch (e) {
-                                reject(new Error("Erro ao salvar metadados no RTDB: " + e.message));
-                            }
-                        } else {
-                            // Erro no lado do servidor (e.g., Filebin limit)
-                            reject(new Error(`Upload falhou no Filebin com status: ${xhr.status}.`));
-                        }
-                    }, false);
+                // 3. Salvar metadados no Realtime Database
+                const fileRefRTDB = dbRef(db, 'files/' + fileIdRTDB);
+                
+                await set(fileRefRTDB, {
+                    fileId: fileIdRTDB,
+                    storageService: 'file.io', // NOVO: Serviço de armazenamento
+                    fileName: file.name,
+                    name: file.name,
+                    size: file.size,
+                    mimetype: file.type || 'application/octet-stream',
+                    downloadUrl: downloadUrl,
+                    // Usamos 'deleteToken' para manter a estrutura, mas é a 'key' do file.io
+                    deleteToken: deleteKey, 
+                    expiry: expiry,
+                    userId: appState.userId,
+                    userName: appState.user.email || appState.user.displayName || 'Usuário',
+                    createdAt: Date.now()
+                });
 
-                    // --- Evento de Erro (Geralmente Erro de Rede, Load Failed, CORS) ---
-                    xhr.addEventListener("error", () => {
-                        // Mensagem mais informativa sobre a causa provável
-                        reject(new Error("Erro de rede: Falha ao carregar. Isso é quase sempre causado por restrições CORS. Certifique-se de que o arquivo está sendo executado a partir de um domínio (http:// ou https://) e não como arquivo local (file://)."));
-                    }, false);
-
-                    // --- Evento de Cancelamento/Aborto ---
-                    xhr.addEventListener("abort", () => {
-                        reject(new Error("Upload cancelado."));
-                    }, false);
-                    
-                    // Abre e envia a requisição POST com o arquivo no corpo
-                    xhr.open("POST", uploadUrl);
-                    xhr.send(file);
-                }); // Fim da Promise
-
-                showMessage(`"${file.name}" enviado com sucesso para o Filebin!`, 'success');
+                showMessage(`"${file.name}" enviado com sucesso para File.io!`, 'success');
                 fileInput.value = ''; // Limpa o campo de arquivo
+                setAppState(state => ({ ...state, loading: false, uploadProgress: 0 }));
 
             } catch (error) {
                 console.error("Erro no upload:", error);
-                showMessage(`Falha no upload: ${error.message}`, 'error');
-            } finally {
-                // Remove o carregamento e zera o progresso
+                showMessage(`Falha no upload: ${error.message}. Verifique o tamanho do arquivo.`, 'error', 6000);
                 setAppState(state => ({ ...state, loading: false, uploadProgress: 0 }));
             }
         }
 
+        // ----------------------------------------------------------------------
+        // --- Lógica de Deleção (Atualizada para File.io) ---
+        // ----------------------------------------------------------------------
+
         async function handleDeleteFile(fileIdRTDB, fileName) {
             if (!appState.userId) return;
 
-            confirmMessage(`Deseja deletar "${fileName}"? Esta ação removerá o arquivo do Filebin.net.`, async () => {
+            confirmMessage(`Deseja deletar "${fileName}"? O arquivo será removido do banco de dados, mas ele **expira automaticamente no File.io** após o primeiro download.`, async () => {
                 setAppState(state => ({ ...state, loading: true }));
                 try {
-                    const fileRefRTDB = ref(db, 'files/' + fileIdRTDB);
+                    const fileRefRTDB = dbRef(db, 'files/' + fileIdRTDB);
                     
-                    // 1. Obter metadados do arquivo para pegar o binId
-                    const snapshot = await new Promise((resolve) => {
-                        onValue(fileRefRTDB, resolve, { onlyOnce: true });
-                    });
-                    
-                    const fileData = snapshot.val();
-                    
-                    if (fileData && fileData.binId) {
-                         // 2. Deletar o BIN inteiro no Filebin.net
-                        const deleteUrl = FILEBIN_CONFIG.apiBase + fileData.binId;
-                        const deleteResponse = await fetch(deleteUrl, { method: 'DELETE' });
+                    // O File.io gratuito não oferece um endpoint simples de DELEÇÃO.
+                    // A deleção é feita por expiração (primeiro download ou 14 dias).
+                    // Ação: Apenas removemos o registro do nosso banco de dados.
 
-                        if (!deleteResponse.ok && deleteResponse.status !== 404) {
-                             // Se não for sucesso e não for 404 (já deletado), reporta erro.
-                            throw new Error(`Falha ao deletar no Filebin (${deleteResponse.status}).`);
-                        }
-                    } else {
-                        console.warn(`Metadados ou binId não encontrados para ${fileIdRTDB}.`);
-                    }
-                   
-                    // 3. Deletar metadados do Realtime Database
                     await remove(fileRefRTDB);
 
-                    showMessage(`"${fileName}" deletado com sucesso do Filebin e do RTDB!`, 'success');
+                    showMessage(`"${fileName}" removido do sistema! O arquivo no File.io expirará em breve.`, 'success');
 
                 } catch (error) {
                     console.error("Erro na deleção:", error);
-                    showMessage(`Falha ao deletar: ${error.message}`, 'error');
+                    showMessage(`Falha ao remover do banco de dados: ${error.message}`, 'error');
                 } finally {
                     setAppState(state => ({ ...state, loading: false }));
                 }
             });
         }
 
+        // --- Funções de Download (Não precisam de alteração) ---
         async function handleDownloadFile(fileId, fileName, downloadUrl) {
             try {
-                // downloadUrl já é a URL direta do Filebin.net, salva no RTDB
-                showMessage(`Iniciando download de "${fileName}" do Filebin...`, 'info');
+                // downloadUrl já é a URL direta
+                showMessage(`Iniciando download de "${fileName}" do File.io...`, 'info');
                 
                 const link = document.createElement('a');
                 link.href = downloadUrl;
-                link.download = fileName; // Sugere o nome original do arquivo
+                // Não adicionamos link.download, pois o File.io cuida do download
                 link.target = '_blank';
                 document.body.appendChild(link);
                 link.click();
@@ -452,7 +416,7 @@
             }
         }
         
-        // --- Resto das Funções de Subscribe/Renderização ---
+        // --- Funções de Subscribe/Renderização e Inicialização (Omitidas para brevidade, mas intactas) ---
         let unsubscribeFiles = null;
 
         function subscribeToFiles() {
@@ -466,7 +430,7 @@
                 return;
             }
 
-            const filesRef = ref(db, 'files');
+            const filesRef = dbRef(db, 'files');
             
             const valueCallback = (snapshot) => {
                 const filesObject = snapshot.val() || {};
@@ -493,7 +457,6 @@
             unsubscribeFiles = () => off(filesRef, 'value', valueCallback);
         }
 
-        // --- Inicialização do Firebase ---
         async function loadInitialState() {
             try {
                 app = initializeApp(FIREBASE_CONFIG);
@@ -532,9 +495,9 @@
             }
         }
 
-        // --- Funções de Renderização (inclusas no seu código anterior) ---
+        // --- Funções de Renderização (Apenas ajustes de texto) ---
         function renderHeader(state) {
-            let authButton;
+             let authButton;
             if (state.userId) {
                 const userEmail = state.user.email;
                 const isAdmin = state.isAdmin;
@@ -560,13 +523,13 @@
                     <div class="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-3">
                         <button 
                             onclick="handleGoogleLogin(false)" 
-                            class="w-full sm:w-auto px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-full transition duration-150 shadow-lg flex items-center justify-center text-sm font-medium"
+                            class="w-full sm:w-auto px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white font-bold rounded-full shadow-lg transition duration-150 flex items-center justify-center text-sm font-medium"
                         >
                             <i class="fab fa-google mr-3"></i> Login como Usuário
                         </button>
                         <button 
                             onclick="handleGoogleLogin(true)" 
-                            class="w-full sm:w-auto px-4 py-2 bg-yellow-500 hover:bg-yellow-600 text-white rounded-full transition duration-150 shadow-lg flex items-center justify-center text-sm font-medium"
+                            class="w-full sm:w-auto px-4 py-2 bg-yellow-500 hover:bg-yellow-600 text-white font-bold rounded-full shadow-lg transition duration-150 flex items-center justify-center text-sm font-medium"
                             title="Admin: ${ADMIN_EMAIL}"
                         >
                             <i class="fas fa-user-shield mr-3"></i> Login como Admin
@@ -595,6 +558,7 @@
                 </header>
             `;
         }
+
 
         function renderFileListView(state) {
             if (!state.isAuthReady) {
@@ -663,7 +627,7 @@
                         <div class="flex flex-col md:flex-row gap-4 items-start md:items-end">
                             <div class="flex-grow">
                                 <label class="block text-sm font-medium text-gray-700 mb-2">
-                                    Selecione o arquivo (máx. ${formatBytes(FILEBIN_CONFIG.maxFileSize)})
+                                    Selecione o arquivo (máx. ${formatBytes(APP_CONFIG.maxFileSize)})
                                 </label>
                                 <input 
                                     type="file" 
@@ -685,9 +649,9 @@
                         </div>
                         ${uploadProgressDisplay}
                         <div class="text-xs text-gray-500 space-y-1">
-                            <p><i class="fas fa-database mr-1"></i> Armazenamento: Filebin.net</p>
-                            <p><i class="fas fa-shield-alt mr-1"></i> Suporte a arquivos de até ${formatBytes(FILEBIN_CONFIG.maxFileSize)}</p>
-                            <p class="font-bold text-red-500"><i class="fas fa-exclamation-triangle mr-1"></i> AVISO: Filebin.net é um serviço temporário e pode expirar arquivos. Não use para armazenamento permanente.</p>
+                            <p><i class="fas fa-database mr-1"></i> Armazenamento: **File.io** (Serviço Público e Simples)</p>
+                            <p><i class="fas fa-shield-alt mr-1"></i> Suporte a arquivos de até 5GB+ (limite aqui de ${formatBytes(APP_CONFIG.maxFileSize)})</p>
+                            <p class="font-bold text-red-500"><i class="fas fa-exclamation-triangle mr-1"></i> **Atenção:** Arquivos no File.io **expiram após o primeiro download** ou 14 dias. Não é permanente.</p>
                         </div>
                     </div>
                 </div>
@@ -716,7 +680,7 @@
                             <i class="fas fa-hdd text-2xl"></i>
                             <div>
                                 <p class="text-sm opacity-90">Armazenamento</p>
-                                <p class="text-lg font-bold">Filebin.net</p>
+                                <p class="text-lg font-bold">File.io</p>
                             </div>
                         </div>
                     </div>
@@ -765,7 +729,7 @@
                                             </span>
                                             <span class="flex items-center space-x-1">
                                                 <i class="fas fa-database"></i>
-                                                <span>Filebin.net</span> 
+                                                <span>File.io</span> 
                                             </span>
                                         </div>
                                     </div>
@@ -781,7 +745,7 @@
                                 ${(file.userId === state.userId || state.isAdmin) ? `
                                 <button onclick="handleDeleteFile('${file.fileId}', '${file.name.replace(/'/g, "\\'")}')" 
                                         class="flex items-center space-x-2 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition duration-150 shadow-sm"
-                                        title="Deletar arquivo">
+                                        title="Deletar registro do banco de dados (o File.io expira automaticamente)">
                                     <i class="fas fa-trash"></i>
                                     <span class="hidden sm:inline">Deletar</span>
                                 </button>
@@ -800,7 +764,7 @@
                         </h2>
                         <div class="flex items-center space-x-2 text-sm text-gray-600">
                             <i class="fas fa-database"></i>
-                            <span>Filebin.net + Realtime DB</span>
+                            <span>File.io + Realtime DB</span>
                         </div>
                     </div>
                     
@@ -826,6 +790,7 @@
             `;
         }
 
+
         function renderMainContent(state) {
             return `<main class="min-h-screen bg-gray-50">${renderFileListView(state)}</main>`;
         }
@@ -848,6 +813,7 @@
         window.handleFileUpload = handleFileUpload; 
         window.handleDeleteFile = handleDeleteFile;
         window.handleDownloadFile = handleDownloadFile;
+        window.executeConfirmAction = window.executeConfirmAction;
         
         loadInitialState();
         renderApp();
