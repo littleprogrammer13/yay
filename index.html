@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MediaGames - Gerenciador de Arquivos (File.io)</title>
+    <title>MediaGames - Gerenciador de Arquivos (GoFile.io)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     
@@ -62,8 +62,6 @@
         </div>
 
     <script>
-        // Não precisamos mais de 'import'
-
         // E-mail Admin
         const ADMIN_EMAIL = 'vilorprogramas@gmail.com'.toLowerCase();
 
@@ -79,15 +77,14 @@
             measurementId: "G-J2K2DZZG28"
         };
         
-        // --- Configurações de Limite e API do File.io ---
+        // --- Configurações de Limite e API do GoFile (NOVA) ---
         const APP_CONFIG = {
-            maxFileSize: 5 * 1024 * 1024 * 1024, // 5GB em bytes 
-            // NOVO ENDPOINT PÚBLICO E SIMPLES
-            FILE_IO_ENDPOINT: 'https://file.io/', 
+            maxFileSize: 30 * 1024 * 1024 * 1024, // ???em bytes 
+            GOFILE_GET_SERVER: 'https://api.gofile.io/getServer', 
         };
 
         // Variáveis globais para Firebase
-        let auth, db, app; // Estas serão inicializadas no loadInitialState
+        let auth, db, app; 
 
         // --- Estado da Aplicação ---
         let appState = {
@@ -98,10 +95,13 @@
             files: [],
             loading: false,
             isAuthReady: false,
-            uploadProgress: 0 
+            uploadProgress: 0,
+            // NOVO: Limite de downloads, controlado pelo Admin
+            maxDownloadsPerUser: 5, 
+            userDownloadCount: 0 // NOVO: Contador do usuário logado
         };
 
-        // --- Funções de Estado e Utilitários (Omitidas para brevidade, mas intactas) ---
+        // --- Funções de Estado e Utilitários (Não alteradas) ---
         function setAppState(updater) {
             const newState = typeof updater === 'function' ? updater(appState) : updater;
             
@@ -111,7 +111,9 @@
                 appState.loading !== newState.loading ||
                 appState.currentView !== newState.currentView ||
                 appState.files !== newState.files ||
-                appState.uploadProgress !== newState.uploadProgress
+                appState.uploadProgress !== newState.uploadProgress ||
+                appState.maxDownloadsPerUser !== newState.maxDownloadsPerUser || // NOVO
+                appState.userDownloadCount !== newState.userDownloadCount // NOVO
             );
 
             appState = newState;
@@ -152,7 +154,7 @@
             });
         }
         
-        // --- Sistema de Mensagens ---
+        // --- Sistema de Mensagens (Não alterado) ---
         function showMessage(text, type = 'info', duration = 4000) {
             const container = document.getElementById('message-container');
             if (!container) return;
@@ -186,7 +188,7 @@
             }, duration);
         }
 
-        // --- Modal de Confirmação ---
+        // --- Modal de Confirmação (Não alterado) ---
         let confirmActionCallback = null;
         function confirmMessage(message, callback, title = "Confirmação de Ação") {
             const modal = document.getElementById('confirmation-modal');
@@ -224,7 +226,7 @@
             window.closeConfirmModal(true);
         }
 
-        // --- Funções de Autenticação (Atualizadas para a sintaxe antiga) ---
+        // --- Funções de Autenticação (Sintaxe antiga do Firebase) ---
         async function handleGoogleLogin(isForAdmin = false) {
             if (!auth) {
                 showMessage('Erro de autenticação: Inicialização pendente.', 'error');
@@ -232,12 +234,10 @@
             }
             
             setAppState(state => ({ ...state, loading: true }));
-            // SINTAXE ANTIGA: firebase.auth.GoogleAuthProvider
             const provider = new firebase.auth.GoogleAuthProvider();
             provider.addScope('email');
 
             try {
-                // SINTAXE ANTIGA: auth.signInWithPopup
                 const result = await auth.signInWithPopup(provider);
                 const user = result.user;
                 const userEmail = user.email ? user.email.toLowerCase() : '';
@@ -271,7 +271,6 @@
             if (!auth) return;
             setAppState(state => ({ ...state, loading: true }));
             try {
-                // SINTAXE ANTIGA: auth.signOut
                 await auth.signOut();
                 showMessage('Logout realizado com sucesso.', 'info');
             } catch (error) {
@@ -282,7 +281,32 @@
         }
 
         // ----------------------------------------------------------------------
-        // --- Lógica do File.io (Upload Revisado) ---
+        // --- NOVO: Lógica de Gerenciamento de Limite de Downloads (Admin) ---
+        // ----------------------------------------------------------------------
+        
+        async function handleSetDownloadLimit() {
+            if (!appState.isAdmin) return;
+            const input = document.getElementById('download-limit-input');
+            const newLimit = parseInt(input.value, 10);
+            
+            if (isNaN(newLimit) || newLimit < 0) {
+                showMessage('Limite inválido. Use um número inteiro positivo.', 'error');
+                return;
+            }
+            
+            setAppState(state => ({ ...state, loading: true }));
+            try {
+                await db.ref('settings/maxDownloadsPerUser').set(newLimit);
+                showMessage(`Limite de downloads atualizado para ${newLimit}!`, 'success');
+            } catch (error) {
+                showMessage('Erro ao salvar limite.', 'error');
+            } finally {
+                setAppState(state => ({ ...state, loading: false }));
+            }
+        }
+
+        // ----------------------------------------------------------------------
+        // --- Lógica do GoFile (Upload Atualizado para Global) ---
         // ----------------------------------------------------------------------
 
         async function handleFileUpload() {
@@ -299,94 +323,105 @@
                 return;
             }
 
-            // Validação de tamanho do arquivo
             if (file.size > APP_CONFIG.maxFileSize) {
                 showMessage(`Arquivo muito grande. Tamanho máximo: ${formatBytes(APP_CONFIG.maxFileSize)}.`, 'error');
                 return;
             }
 
-            // File.io tem um limite de 100MB no plano gratuito.
-            if (file.size > 100 * 1024 * 1024) { 
-                showMessage('O File.io gratuito geralmente limita a 100MB. Seu arquivo pode falhar.', 'warning', 7000);
-            }
-
-            // Inicia o estado de carregamento
             setAppState(state => ({ ...state, loading: true, uploadProgress: 1 }));
             
-            const fileIdRTDB = `fi_${appState.userId}_${Date.now().toString(36)}`;
+            const fileIdRTDB = `go_${appState.userId}_${Date.now().toString(36)}`;
             
-            try {
-                // 1. Configurar o upload usando FormData
-                const formData = new FormData();
-                formData.append('file', file, file.name); // O File.io espera o campo 'file'
+            // NOVO: Verifica se o Admin marcou como Global
+            const isGlobal = appState.isAdmin && document.getElementById('global-upload-checkbox')?.checked || false;
 
-                // 2. Usar 'fetch' para simplicidade do endpoint
-                const response = await fetch(APP_CONFIG.FILE_IO_ENDPOINT, {
+            try {
+                // PASSO 1: Obter o servidor de upload
+                showMessage('Obtendo servidor de upload do GoFile...', 'info');
+                const serverResponse = await fetch(APP_CONFIG.GOFILE_GET_SERVER);
+                const serverData = await serverResponse.json();
+
+                if (serverData.status !== 'ok') {
+                    throw new Error(`Falha ao obter servidor GoFile: ${serverData.message || 'Erro desconhecido.'}`);
+                }
+                
+                const server = serverData.data.server;
+                const uploadEndpoint = `https://${server}.gofile.io/uploadFile`;
+
+                // PASSO 2: Configurar e executar o upload
+                showMessage(`Servidor ${server} selecionado. Enviando arquivo...`, 'info');
+                setAppState(state => ({ ...state, uploadProgress: 50 })); 
+
+                const formData = new FormData();
+                formData.append('file', file, file.name);
+
+                const uploadResponse = await fetch(uploadEndpoint, {
                     method: 'POST',
                     body: formData,
                 });
 
-                if (!response.ok) {
-                    throw new Error(`Falha no upload (Status: ${response.status}).`);
+                if (!uploadResponse.ok) {
+                    throw new Error(`Falha no upload (Status: ${uploadResponse.status}).`);
                 }
 
-                const result = await response.json();
+                const uploadResult = await uploadResponse.json();
 
-                if (!result.success) {
-                    throw new Error(`Falha no upload: ${result.message || 'Serviço recusou o arquivo.'}`);
+                if (uploadResult.status !== 'ok') {
+                    throw new Error(`Falha no upload: ${uploadResult.message || 'Serviço GoFile recusou o arquivo.'}`);
                 }
                 
-                const downloadUrl = result.link; 
-                const deleteKey = result.key; // Chave que identifica o arquivo no File.io
-                const expiry = result.expiry; // Data/hora de expiração
+                const downloadUrl = uploadResult.data.downloadPage; 
+                const fileIdGofile = uploadResult.data.id; 
 
                 // 3. Salvar metadados no Realtime Database
-                // SINTAXE ANTIGA: db.ref('caminho') e .set({dados})
                 const fileRefRTDB = db.ref('files/' + fileIdRTDB);
                 
                 await fileRefRTDB.set({
                     fileId: fileIdRTDB,
-                    storageService: 'file.io', // NOVO: Serviço de armazenamento
+                    storageService: 'gofile.io',
                     fileName: file.name,
                     name: file.name,
                     size: file.size,
                     mimetype: file.type || 'application/octet-stream',
                     downloadUrl: downloadUrl,
-                    // Usamos 'deleteToken' para manter a estrutura, mas é a 'key' do file.io
-                    deleteToken: deleteKey, 
-                    expiry: expiry,
+                    deleteToken: fileIdGofile,
                     userId: appState.userId,
                     userName: appState.user.email || appState.user.displayName || 'Usuário',
-                    createdAt: Date.now()
+                    createdAt: Date.now(),
+                    isGlobal: isGlobal // NOVO: Campo de visibilidade
                 });
 
-                showMessage(`"${file.name}" enviado com sucesso para File.io!`, 'success');
-                fileInput.value = ''; // Limpa o campo de arquivo
-                setAppState(state => ({ ...state, loading: false, uploadProgress: 0 }));
+                showMessage(`"${file.name}" enviado com sucesso! ${isGlobal ? '(GLOBAL)' : '(Pessoal)'}`, 'success');
+                fileInput.value = ''; 
+                // Limpa o checkbox global após o upload
+                if(document.getElementById('global-upload-checkbox')) {
+                    document.getElementById('global-upload-checkbox').checked = false;
+                }
+                setAppState(state => ({ ...state, loading: false, uploadProgress: 100 })); 
+                setTimeout(() => setAppState(state => ({ ...state, uploadProgress: 0 })), 500); 
 
             } catch (error) {
                 console.error("Erro no upload:", error);
-                showMessage(`Falha no upload: ${error.message}. Verifique o tamanho do arquivo.`, 'error', 6000);
+                showMessage(`Falha no upload: ${error.message}.`, 'error', 6000);
                 setAppState(state => ({ ...state, loading: false, uploadProgress: 0 }));
             }
         }
-
+        
         // ----------------------------------------------------------------------
-        // --- Lógica de Deleção (Atualizada para a sintaxe antiga) ---
+        // --- Lógica de Deleção (Não alterada) ---
         // ----------------------------------------------------------------------
 
         async function handleDeleteFile(fileIdRTDB, fileName) {
             if (!appState.userId) return;
 
-            confirmMessage(`Deseja deletar "${fileName}"? O arquivo será removido do banco de dados, mas ele **expira automaticamente no File.io** após o primeiro download.`, async () => {
+            confirmMessage(`Deseja deletar "${fileName}"? O arquivo será removido do banco de dados.`, async () => {
                 setAppState(state => ({ ...state, loading: true }));
                 try {
-                    // SINTAXE ANTIGA: db.ref('caminho') e .remove()
                     const fileRefRTDB = db.ref('files/' + fileIdRTDB);
                     
                     await fileRefRTDB.remove();
 
-                    showMessage(`"${fileName}" removido do sistema! O arquivo no File.io expirará em breve.`, 'success');
+                    showMessage(`"${fileName}" removido do sistema!`, 'success');
 
                 } catch (error) {
                     console.error("Erro na deleção:", error);
@@ -397,15 +432,45 @@
             });
         }
 
-        // --- Funções de Download (Não precisam de alteração) ---
+        // ----------------------------------------------------------------------
+        // --- NOVO: Lógica de Download com Checagem de Limite ---
+        // ----------------------------------------------------------------------
         async function handleDownloadFile(fileId, fileName, downloadUrl) {
+            if (!appState.userId) {
+                showMessage('Você precisa estar logado para baixar arquivos.', 'warning');
+                return;
+            }
+
             try {
-                // downloadUrl já é a URL direta
-                showMessage(`Iniciando download de "${fileName}" do File.io...`, 'info');
-                
+                // 1. ADMIN tem downloads ilimitados
+                if (appState.isAdmin) {
+                    showMessage(`Download de Admin: "${fileName}" iniciado!`, 'info');
+                } else {
+                    // 2. USUÁRIO REGULAR: Checar limite
+                    const userRef = db.ref('users/' + appState.userId);
+                    const maxLimit = appState.maxDownloadsPerUser;
+
+                    // Busca o contador atual do usuário
+                    const userSnapshot = await userRef.once('value');
+                    const userData = userSnapshot.val() || { downloadCount: 0 };
+                    const currentCount = userData.downloadCount || 0;
+
+                    // Bloqueia se o limite for atingido (e o limite for > 0)
+                    if (maxLimit > 0 && currentCount >= maxLimit) {
+                        showMessage(`Limite de downloads (${maxLimit}) atingido. Arquivo "${fileName}" bloqueado.`, 'error', 7000);
+                        return;
+                    }
+                    
+                    // 3. Permite o download e incrementa o contador
+                    const newCount = currentCount + 1;
+                    await userRef.update({ downloadCount: newCount });
+                    setAppState(state => ({ ...state, userDownloadCount: newCount })); // Atualiza a UI localmente
+                    showMessage(`Download ${newCount}/${maxLimit} iniciado.`, 'info');
+                }
+
+                // 4. Inicia o download (link direto do GoFile)
                 const link = document.createElement('a');
                 link.href = downloadUrl;
-                // Não adicionamos link.download, pois o File.io cuida do download
                 link.target = '_blank';
                 document.body.appendChild(link);
                 link.click();
@@ -418,21 +483,21 @@
             }
         }
         
-        // --- Funções de Subscribe/Renderização e Inicialização (Atualizadas para a sintaxe antiga) ---
+        // ----------------------------------------------------------------------
+        // --- Funções de Subscribe/Inicialização (Atualizadas) ---
+        // ----------------------------------------------------------------------
         let unsubscribeFiles = null;
+        let unsubscribeSettings = null;
+        let unsubscribeUser = null;
 
         function subscribeToFiles() {
-            if (unsubscribeFiles) {
-                unsubscribeFiles();
-                unsubscribeFiles = null;
-            }
+            if (unsubscribeFiles) { unsubscribeFiles(); unsubscribeFiles = null; }
 
             if (!appState.isAuthReady || !db || !appState.userId) {
                 setAppState(state => ({ ...state, files: [] }));
                 return;
             }
 
-            // SINTAXE ANTIGA: db.ref('caminho')
             const filesRef = db.ref('files');
             
             const valueCallback = (snapshot) => {
@@ -442,9 +507,13 @@
                 let filteredFiles;
                 
                 if (appState.isAdmin) {
+                    // Admin vê todos os arquivos (pessoais e globais)
                     filteredFiles = allFiles;
                 } else {
-                    filteredFiles = allFiles.filter(file => file.userId === appState.userId);
+                    // Usuário regular vê seus arquivos OU arquivos globais (isGlobal: true)
+                    filteredFiles = allFiles.filter(file => 
+                        file.userId === appState.userId || file.isGlobal === true
+                    );
                 }
 
                 filteredFiles.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
@@ -452,25 +521,53 @@
                 setAppState(state => ({ ...state, files: filteredFiles }));
             };
 
-            // SINTAXE ANTIGA: filesRef.on('value', callback, errorCallback)
             filesRef.on('value', valueCallback, (error) => {
                 console.error("Erro no Realtime Database:", error);
                 showMessage('Erro ao carregar arquivos.', 'error');
             });
             
-            // SINTAXE ANTIGA: filesRef.off('value', callback)
             unsubscribeFiles = () => filesRef.off('value', valueCallback);
         }
 
+        function subscribeToSettingsAndUser() {
+            // Unsubscribe de listeners anteriores
+            if (unsubscribeSettings) { unsubscribeSettings(); unsubscribeSettings = null; }
+            if (unsubscribeUser) { unsubscribeUser(); unsubscribeUser = null; }
+            
+            if (!db) return;
+
+            // Listener para o Limite de Downloads (GLOBAL)
+            const settingsRef = db.ref('settings/maxDownloadsPerUser');
+            const settingsCallback = (snapshot) => {
+                const limit = snapshot.val();
+                if (limit !== null) {
+                    setAppState(state => ({ ...state, maxDownloadsPerUser: parseInt(limit, 10) }));
+                }
+            };
+            settingsRef.on('value', settingsCallback);
+            unsubscribeSettings = () => settingsRef.off('value', settingsCallback);
+
+            // Listener para o Contador de Downloads do Usuário (Se logado e não Admin)
+            if (appState.userId && !appState.isAdmin) {
+                const userRef = db.ref('users/' + appState.userId + '/downloadCount');
+                const userCallback = (snapshot) => {
+                    const count = snapshot.val() || 0;
+                    setAppState(state => ({ ...state, userDownloadCount: count }));
+                };
+                userRef.on('value', userCallback);
+                unsubscribeUser = () => userRef.off('value', userCallback);
+            } else {
+                 setAppState(state => ({ ...state, userDownloadCount: 0 }));
+            }
+        }
+
+
         async function loadInitialState() {
             try {
-                // SINTAXE ANTIGA: firebase.initializeApp
                 app = firebase.initializeApp(FIREBASE_CONFIG);
-                // SINTAXE ANTIGA: firebase.auth() e firebase.database()
                 auth = firebase.auth();
                 db = firebase.database();
                 
-                // SINTAXE ANTIGA: auth.onAuthStateChanged
                 auth.onAuthStateChanged((user) => {
                     if (user) {
                         const userEmail = user.email ? user.email.toLowerCase() : '';
@@ -503,7 +600,8 @@
             }
         }
 
-        // --- Funções de Renderização (Sem mudanças) ---
+        // --- Funções de Renderização (Ajustadas) ---
+
         function renderHeader(state) {
              let authButton;
             if (state.userId) {
@@ -624,7 +722,16 @@
                         </div>
                     </div>
                 ` : '';
-
+            
+            // NOVO: Opção Global para Admin
+            const globalCheckbox = state.isAdmin ? `
+                <div class="flex items-center mt-3">
+                    <input id="global-upload-checkbox" type="checkbox" class="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500">
+                    <label for="global-upload-checkbox" class="ml-2 block text-sm font-medium text-gray-700 font-semibold">
+                        Tornar arquivo **GLOBAL** (visível para todos os usuários)
+                    </label>
+                </div>
+            ` : '';
 
             const uploadSection = `
                 <div class="bg-white p-6 rounded-2xl shadow-xl mb-8 border border-gray-100">
@@ -644,6 +751,7 @@
                                     onchange="document.getElementById('upload-button').disabled = !this.files.length"
                                     ${state.loading ? 'disabled' : ''}
                                 >
+                                ${globalCheckbox}
                             </div>
                             <button 
                                 id="upload-button"
@@ -657,17 +765,52 @@
                         </div>
                         ${uploadProgressDisplay}
                         <div class="text-xs text-gray-500 space-y-1">
-                            <p><i class="fas fa-database mr-1"></i> Armazenamento: **File.io** (Serviço Público e Simples)</p>
-                            <p><i class="fas fa-shield-alt mr-1"></i> Suporte a arquivos de até 5GB+ (limite aqui de ${formatBytes(APP_CONFIG.maxFileSize)})</p>
-                            <p class="font-bold text-red-500"><i class="fas fa-exclamation-triangle mr-1"></i> **Atenção:** Arquivos no File.io **expiram após o primeiro download** ou 14 dias. Não é permanente.</p>
+                            <p><i class="fas fa-database mr-1"></i> Armazenamento: **GoFile.io** (Serviço Semi-Permanente)</p>
+                            <p class="font-bold text-blue-500"><i class="fas fa-info-circle mr-1"></i> **Melhor Retenção:** Arquivos no GoFile duram mais tempo do que no File.io.</p>
                         </div>
                     </div>
                 </div>
             `;
+            
+            const adminPanel = state.isAdmin ? `
+                <div class="bg-yellow-50 p-6 rounded-2xl shadow-xl mb-8 border border-yellow-200">
+                    <h3 class="text-xl font-bold text-yellow-800 mb-4 flex items-center">
+                        <i class="fas fa-sliders-h mr-3 text-yellow-500"></i> Painel de Gerenciamento (Admin)
+                    </h3>
+                    <div class="flex flex-col sm:flex-row items-end gap-3">
+                        <div class="flex-grow w-full">
+                            <label for="download-limit-input" class="block text-sm font-medium text-gray-700">
+                                Limite de Downloads p/ Usuário (Atual: **${state.maxDownloadsPerUser}**)
+                            </label>
+                            <input type="number" id="download-limit-input" value="${state.maxDownloadsPerUser}" min="0" class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-yellow-500 focus:ring-yellow-500 p-3">
+                        </div>
+                        <button 
+                            onclick="handleSetDownloadLimit()" 
+                            class="w-full sm:w-auto px-6 py-3 bg-yellow-500 hover:bg-yellow-600 disabled:bg-gray-400 text-white font-bold rounded-xl transition duration-150 shadow-md flex items-center justify-center min-w-[120px]"
+                        >
+                            <i class="fas fa-save mr-2"></i> Salvar Limite
+                        </button>
+                    </div>
+                    <p class="text-xs text-gray-600 mt-3"><span class="font-bold">0</span> significa Downloads Ilimitados.</p>
+                </div>
+            ` : '';
+
+
+            const downloadQuota = !state.isAdmin && state.maxDownloadsPerUser > 0 ? `
+                <div class="flex items-center space-x-3">
+                    <i class="fas fa-download text-2xl"></i>
+                    <div>
+                        <p class="text-sm opacity-90">Downloads Restantes</p>
+                        <p class="text-lg font-bold">
+                            ${Math.max(0, state.maxDownloadsPerUser - state.userDownloadCount)} / ${state.maxDownloadsPerUser}
+                        </p>
+                    </div>
+                </div>
+            ` : '';
 
             const fileStats = `
                 <div class="bg-gradient-to-r from-blue-500 to-blue-600 text-white p-4 rounded-2xl shadow-lg mb-6">
-                    <div class="flex flex-wrap justify-between items-center">
+                    <div class="flex flex-wrap justify-between items-center gap-4">
                         <div class="flex items-center space-x-3">
                             <i class="fas fa-chart-bar text-2xl"></i>
                             <div>
@@ -675,20 +818,12 @@
                                 <p class="text-2xl font-bold">${state.files.length}</p>
                             </div>
                         </div>
-                        ${state.isAdmin ? `
-                        <div class="flex items-center space-x-3">
-                            <i class="fas fa-users text-2xl"></i>
-                            <div>
-                                <p class="text-sm opacity-90">Modo Admin</p>
-                                <p class="text-lg font-bold">Todos os arquivos</p>
-                            </div>
-                        </div>
-                        ` : ''}
+                        ${downloadQuota}
                         <div class="flex items-center space-x-3">
                             <i class="fas fa-hdd text-2xl"></i>
                             <div>
                                 <p class="text-sm opacity-90">Armazenamento</p>
-                                <p class="text-lg font-bold">File.io</p>
+                                <p class="text-lg font-bold">GoFile.io</p>
                             </div>
                         </div>
                     </div>
@@ -705,6 +840,7 @@
                 `
                 : state.files.map(file => `
                     <div class="file-card bg-white p-5 rounded-xl shadow-md border-l-4 ${
+                        file.isGlobal ? 'border-indigo-500' : 
                         file.userId === state.userId ? 'border-blue-500' : 'border-yellow-500'
                     } fade-in">
                         <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -719,12 +855,15 @@
                                         'fa-file'
                                     } text-gray-400 mt-1 flex-shrink-0"></i>
                                     <div class="min-w-0 flex-grow">
-                                        <p class="font-semibold text-gray-800 truncate text-lg mb-1">${file.name}</p>
+                                        <p class="font-semibold text-gray-800 truncate text-lg mb-1">
+                                            ${file.name}
+                                            ${file.isGlobal ? '<span class="ml-2 bg-indigo-500 text-white text-xs px-2 py-1 rounded-full">GLOBAL</span>' : ''}
+                                        </p>
                                         <div class="flex flex-wrap gap-2 text-xs text-gray-500">
                                             <span class="flex items-center space-x-1">
                                                 <i class="fas fa-user"></i>
-                                                <span class="${file.userId === state.userId ? 'text-blue-600 font-medium' : 'text-yellow-600 font-medium'}">
-                                                    ${file.userId === state.userId ? 'Você' : (state.isAdmin ? file.userName : 'Outro usuário')}
+                                                <span class="${file.userId === state.userId ? 'text-blue-600 font-medium' : file.isGlobal ? 'text-indigo-600 font-medium' : 'text-yellow-600 font-medium'}">
+                                                    ${file.userId === state.userId ? 'Você' : (state.isAdmin ? file.userName : 'Comunidade')}
                                                 </span>
                                             </span>
                                             <span class="flex items-center space-x-1">
@@ -737,7 +876,7 @@
                                             </span>
                                             <span class="flex items-center space-x-1">
                                                 <i class="fas fa-database"></i>
-                                                <span>File.io</span> 
+                                                <span>GoFile.io</span> 
                                             </span>
                                         </div>
                                     </div>
@@ -753,7 +892,7 @@
                                 ${(file.userId === state.userId || state.isAdmin) ? `
                                 <button onclick="handleDeleteFile('${file.fileId}', '${file.name.replace(/'/g, "\\'")}')" 
                                         class="flex items-center space-x-2 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition duration-150 shadow-sm"
-                                        title="Deletar registro do banco de dados (o File.io expira automaticamente)">
+                                        title="Deletar registro do banco de dados">
                                     <i class="fas fa-trash"></i>
                                     <span class="hidden sm:inline">Deletar</span>
                                 </button>
@@ -772,10 +911,11 @@
                         </h2>
                         <div class="flex items-center space-x-2 text-sm text-gray-600">
                             <i class="fas fa-database"></i>
-                            <span>File.io + Realtime DB</span>
+                            <span>GoFile.io + Realtime DB</span>
                         </div>
                     </div>
                     
+                    ${adminPanel}
                     ${uploadSection}
                     ${fileStats}
                     
@@ -812,6 +952,10 @@
             useEffect(() => {
                 subscribeToFiles();
             }, [appState.isAuthReady, appState.userId, appState.isAdmin, db], 'FileSubscriptionEffect');
+
+            useEffect(() => {
+                subscribeToSettingsAndUser();
+            }, [appState.isAuthReady, appState.userId, appState.isAdmin, db], 'SettingsUserEffect');
         }
 
         // --- Inicialização da Aplicação ---
@@ -822,7 +966,8 @@
         window.handleDeleteFile = handleDeleteFile;
         window.handleDownloadFile = handleDownloadFile;
         window.executeConfirmAction = window.executeConfirmAction;
-        
+        window.handleSetDownloadLimit = handleSetDownloadLimit; // NOVO
+
         loadInitialState();
         renderApp();
 
