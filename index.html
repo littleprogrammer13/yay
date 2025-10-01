@@ -7,6 +7,10 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+    
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
         
@@ -57,11 +61,8 @@
     <div id="app">
         </div>
 
-    <script type="module">
-        // --- Importações e Configurações de Firebase ---
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getDatabase, ref as dbRef, set, remove, onValue, off, get } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-database.js";
+    <script>
+        // Não precisamos mais de 'import'
 
         // E-mail Admin
         const ADMIN_EMAIL = 'vilorprogramas@gmail.com'.toLowerCase();
@@ -86,7 +87,7 @@
         };
 
         // Variáveis globais para Firebase
-        let auth, db, app; 
+        let auth, db, app; // Estas serão inicializadas no loadInitialState
 
         // --- Estado da Aplicação ---
         let appState = {
@@ -223,7 +224,7 @@
             window.closeConfirmModal(true);
         }
 
-        // --- Funções de Autenticação (Sem mudanças) ---
+        // --- Funções de Autenticação (Atualizadas para a sintaxe antiga) ---
         async function handleGoogleLogin(isForAdmin = false) {
             if (!auth) {
                 showMessage('Erro de autenticação: Inicialização pendente.', 'error');
@@ -231,17 +232,19 @@
             }
             
             setAppState(state => ({ ...state, loading: true }));
-            const provider = new GoogleAuthProvider();
+            // SINTAXE ANTIGA: firebase.auth.GoogleAuthProvider
+            const provider = new firebase.auth.GoogleAuthProvider();
             provider.addScope('email');
 
             try {
-                const result = await signInWithPopup(auth, provider);
+                // SINTAXE ANTIGA: auth.signInWithPopup
+                const result = await auth.signInWithPopup(provider);
                 const user = result.user;
                 const userEmail = user.email ? user.email.toLowerCase() : '';
 
                 if (isForAdmin) {
                     if (userEmail !== ADMIN_EMAIL) {
-                        await signOut(auth);
+                        await auth.signOut();
                         showMessage('Acesso negado: Somente o e-mail ' + ADMIN_EMAIL + ' pode fazer login como Admin.', 'error');
                         return;
                     }
@@ -249,7 +252,7 @@
                 } else {
                     if (userEmail === ADMIN_EMAIL) {
                         showMessage('Você é um admin. Por favor, use o botão "Login Admin".', 'warning');
-                        await signOut(auth);
+                        await auth.signOut();
                         return;
                     }
                     showMessage('Login de Usuário realizado com sucesso!', 'success');
@@ -268,7 +271,8 @@
             if (!auth) return;
             setAppState(state => ({ ...state, loading: true }));
             try {
-                await signOut(auth);
+                // SINTAXE ANTIGA: auth.signOut
+                await auth.signOut();
                 showMessage('Logout realizado com sucesso.', 'info');
             } catch (error) {
                 setAppState(state => ({ ...state, loading: false }));
@@ -337,9 +341,10 @@
                 const expiry = result.expiry; // Data/hora de expiração
 
                 // 3. Salvar metadados no Realtime Database
-                const fileRefRTDB = dbRef(db, 'files/' + fileIdRTDB);
+                // SINTAXE ANTIGA: db.ref('caminho') e .set({dados})
+                const fileRefRTDB = db.ref('files/' + fileIdRTDB);
                 
-                await set(fileRefRTDB, {
+                await fileRefRTDB.set({
                     fileId: fileIdRTDB,
                     storageService: 'file.io', // NOVO: Serviço de armazenamento
                     fileName: file.name,
@@ -367,7 +372,7 @@
         }
 
         // ----------------------------------------------------------------------
-        // --- Lógica de Deleção (Atualizada para File.io) ---
+        // --- Lógica de Deleção (Atualizada para a sintaxe antiga) ---
         // ----------------------------------------------------------------------
 
         async function handleDeleteFile(fileIdRTDB, fileName) {
@@ -376,13 +381,10 @@
             confirmMessage(`Deseja deletar "${fileName}"? O arquivo será removido do banco de dados, mas ele **expira automaticamente no File.io** após o primeiro download.`, async () => {
                 setAppState(state => ({ ...state, loading: true }));
                 try {
-                    const fileRefRTDB = dbRef(db, 'files/' + fileIdRTDB);
+                    // SINTAXE ANTIGA: db.ref('caminho') e .remove()
+                    const fileRefRTDB = db.ref('files/' + fileIdRTDB);
                     
-                    // O File.io gratuito não oferece um endpoint simples de DELEÇÃO.
-                    // A deleção é feita por expiração (primeiro download ou 14 dias).
-                    // Ação: Apenas removemos o registro do nosso banco de dados.
-
-                    await remove(fileRefRTDB);
+                    await fileRefRTDB.remove();
 
                     showMessage(`"${fileName}" removido do sistema! O arquivo no File.io expirará em breve.`, 'success');
 
@@ -416,7 +418,7 @@
             }
         }
         
-        // --- Funções de Subscribe/Renderização e Inicialização (Omitidas para brevidade, mas intactas) ---
+        // --- Funções de Subscribe/Renderização e Inicialização (Atualizadas para a sintaxe antiga) ---
         let unsubscribeFiles = null;
 
         function subscribeToFiles() {
@@ -430,7 +432,8 @@
                 return;
             }
 
-            const filesRef = dbRef(db, 'files');
+            // SINTAXE ANTIGA: db.ref('caminho')
+            const filesRef = db.ref('files');
             
             const valueCallback = (snapshot) => {
                 const filesObject = snapshot.val() || {};
@@ -449,21 +452,26 @@
                 setAppState(state => ({ ...state, files: filteredFiles }));
             };
 
-            onValue(filesRef, valueCallback, (error) => {
+            // SINTAXE ANTIGA: filesRef.on('value', callback, errorCallback)
+            filesRef.on('value', valueCallback, (error) => {
                 console.error("Erro no Realtime Database:", error);
                 showMessage('Erro ao carregar arquivos.', 'error');
             });
             
-            unsubscribeFiles = () => off(filesRef, 'value', valueCallback);
+            // SINTAXE ANTIGA: filesRef.off('value', callback)
+            unsubscribeFiles = () => filesRef.off('value', valueCallback);
         }
 
         async function loadInitialState() {
             try {
-                app = initializeApp(FIREBASE_CONFIG);
-                db = getDatabase(app);
-                auth = getAuth(app);
+                // SINTAXE ANTIGA: firebase.initializeApp
+                app = firebase.initializeApp(FIREBASE_CONFIG);
+                // SINTAXE ANTIGA: firebase.auth() e firebase.database()
+                auth = firebase.auth();
+                db = firebase.database();
                 
-                onAuthStateChanged(auth, (user) => {
+                // SINTAXE ANTIGA: auth.onAuthStateChanged
+                auth.onAuthStateChanged((user) => {
                     if (user) {
                         const userEmail = user.email ? user.email.toLowerCase() : '';
                         const isAdmin = userEmail === ADMIN_EMAIL;
@@ -495,7 +503,7 @@
             }
         }
 
-        // --- Funções de Renderização (Apenas ajustes de texto) ---
+        // --- Funções de Renderização (Sem mudanças) ---
         function renderHeader(state) {
              let authButton;
             if (state.userId) {
